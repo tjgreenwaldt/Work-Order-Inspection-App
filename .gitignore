@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode build artifacts
+DerivedData/
+build/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# Swift Package Manager local state
+.swiftpm/
+Packages/
+
+# Local environment and secrets
+.env
+.env.*
+*.xcconfig.local
+Secrets.xcconfig
+secrets/
+*.p8
+*.pem
+*.key
+
+# Logs and temporary files
+*.log
+tmp/
+temp/

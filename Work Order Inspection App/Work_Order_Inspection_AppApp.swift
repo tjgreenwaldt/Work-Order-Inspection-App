@@ -1,18 +1,18 @@
-//
-//  Work_Order_Inspection_AppApp.swift
-//  Work Order Inspection App
-//
-//  Created by Tyler Greenwaldt on 5/20/26.
-//
-
 import SwiftUI
 import SwiftData
 
 @main
 struct Work_Order_Inspection_AppApp: App {
+    @StateObject private var appEnvironment = AppEnvironment(apiClient: MockSalesforceAPIClient())
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            SiteEntity.self,
+            WorkOrderEntity.self,
+            WorkTaskEntity.self,
+            WorkTaskStepEntity.self,
+            LocalStepDraftEntity.self,
+            PendingPhotoUploadEntity.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -26,6 +26,7 @@ struct Work_Order_Inspection_AppApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(appEnvironment)
         }
         .modelContainer(sharedModelContainer)
     }
