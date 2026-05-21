@@ -8,6 +8,8 @@ struct WorkOrderSyncMessage: Equatable {
 }
 
 #if DEBUG
+// DEBUG backend modes keep the same app flow while swapping only the Salesforce boundary:
+// mock data, a manually pasted real session, or the configured OAuth login.
 enum AppBackendSelection: String, CaseIterable, Identifiable {
     case mock = "Mock Salesforce"
     case realManual = "Real Salesforce - Manual Session"
@@ -92,9 +94,11 @@ final class AppEnvironment: ObservableObject {
         case .mock:
             apiClient = MockSalesforceAPIClient()
         case .realManual:
+            // Manual sessions are intentionally ephemeral so pasted tokens are not persisted.
             let session = manualSession()
             apiClient = RealSalesforceAPIClient(config: .current, session: session, tokenStore: EphemeralSalesforceTokenStore())
         case .realOAuth:
+            // OAuth sessions use the normal keychain-backed token store and refresh path.
             apiClient = RealSalesforceAPIClient(config: .current)
         }
     }
@@ -168,6 +172,7 @@ final class AppEnvironment: ObservableObject {
     func recordWorkOrderSyncFailure(workOrderId: String, error: Error, isConnectivityError: Bool) {
         let detail = error.localizedDescription
         recordSyncFailure(detail)
+        // Submit is local-first: failed uploads keep the inspection saved in SwiftData and surface retry guidance.
         workOrderSyncMessages[workOrderId] = WorkOrderSyncMessage(
             message: isConnectivityError
                 ? "Changes are saved locally. Sync will resume when connectivity returns."

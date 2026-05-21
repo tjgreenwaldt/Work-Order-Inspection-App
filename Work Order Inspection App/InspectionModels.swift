@@ -75,6 +75,7 @@ extension SiteDTO {
     }
 
     var pfIdPrefix: String {
+        // Site selection starts at a Plant record; Work Orders are found through child equipment names that share this PF prefix.
         sitePfIdPrefix(from: name)
     }
 }
@@ -191,12 +192,14 @@ extension SiteEntity {
     }
 
     var pfIdPrefix: String {
+        // Keep the SwiftData entity projection aligned with SiteDTO so cached sites drive the same Work Order lookup.
         sitePfIdPrefix(from: name)
     }
 }
 
 enum SiteNameDisplay {
     static func readableFallback(from equipmentName: String) -> String {
+        // Salesforce equipment names often encode the PF prefix and ".Plant"; strip those parts for a readable site label.
         let trimmedName = equipmentName.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = sitePfIdPrefix(from: trimmedName)
         var remainder = trimmedName
@@ -355,6 +358,7 @@ final class WorkTaskStepEntity {
 @Model
 final class LocalStepDraftEntity {
     @Attribute(.unique) var id: UUID
+    // SwiftData cannot express the intended composite key directly, so this guards one draft per Work Order/Step pair.
     @Attribute(.unique) var draftKey: String?
     var workOrderId: String
     var workTaskId: String
@@ -379,6 +383,7 @@ final class LocalStepDraftEntity {
     }
 
     var hasChangesForUpload: Bool {
+        // Only changed step results/comments become pending uploads; unchanged cached Salesforce values stay local.
         resultRawValue != (originalResultRawValue ?? resultRawValue) ||
         comments != (originalComments ?? comments)
     }

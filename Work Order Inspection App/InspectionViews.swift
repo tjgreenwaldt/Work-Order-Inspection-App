@@ -633,6 +633,7 @@ struct InspectionFormView: View {
             }
             let draftRepository = LocalStepDraftRepository(modelContext: modelContext)
             let syncService = InspectionSyncService(apiClient: appEnvironment.apiClient, draftRepository: draftRepository)
+            // Submit is local-first: mark changed drafts pending, close the form, then upload in the background.
             try syncService.markWorkOrderPendingUpload(workOrder.id)
             dismiss()
             Task {

@@ -78,6 +78,7 @@ struct WorkOrderRepository: ModelSaving {
         let end = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? scheduledDate
         return try modelContext.fetch(FetchDescriptor<WorkOrderEntity>(sortBy: [SortDescriptor(\WorkOrderEntity.name)]))
             .filter { workOrder in
+                // In Salesforce, scheduled Work Orders may be attached to child equipment instead of the Plant record.
                 let matchesSelectedSite = workOrder.assetId == siteId
                 let matchesChildEquipment = workOrder.assetName?.hasPrefix(equipmentNamePrefix) == true
                 return (matchesSelectedSite || matchesChildEquipment) && workOrder.scheduledStartDate >= start && workOrder.scheduledStartDate < end
@@ -165,6 +166,7 @@ struct LocalStepDraftRepository: ModelSaving {
             $0.draftKey == draftKey || ($0.workOrderId == workOrderId && $0.workTaskStepId == stepId)
         }
         if existing?.draftKey == nil {
+            // Backfill older local drafts so future lookups use the composite draft key consistently.
             existing?.draftKey = draftKey
             try saveIfNeeded()
         }
@@ -192,6 +194,7 @@ struct LocalStepDraftRepository: ModelSaving {
     func buildDrafts(workOrderId: String, tasks: [WorkTaskEntity], steps: [WorkTaskStepEntity]) throws {
         for step in steps {
             if let existing = try draft(workOrderId: workOrderId, stepId: step.id) {
+                // Preserve the original Salesforce values for change detection across repeated inspection loads.
                 existing.originalResultRawValue = existing.originalResultRawValue ?? existing.resultRawValue
                 existing.originalComments = existing.originalComments ?? existing.comments
                 continue
@@ -213,6 +216,7 @@ struct LocalStepDraftRepository: ModelSaving {
     func markWorkOrderPendingUpload(_ workOrderId: String) throws {
         for draft in try drafts(workOrderId: workOrderId) {
             guard draft.hasChangesForUpload || draft.syncStatus == .syncError else { continue }
+            // Submit marks changed drafts for upload but leaves them in SwiftData until sync confirms Salesforce accepted them.
             draft.syncStatus = .pendingUpload
             draft.completedAt = draft.completedAt ?? Date()
             draft.lastSyncError = nil
@@ -260,9 +264,11 @@ struct WorkOrderService {
 
     func fetchTodaysWorkOrders(site: SiteDTO) async throws -> [WorkOrderEntity] {
         let today = Date()
+        // Salesforce read path: selected site -> derived PF prefix -> Work Orders on child equipment for today.
         let workOrders = try await apiClient.fetchWorkOrders(site: site, scheduledDate: today)
         try repository.upsert(workOrders)
         if apiClient is RealSalesforceAPIClient {
+            // Real queries already use the PF-prefix relationship, so display exactly the returned records.
             return try repository.forIds(workOrders.map(\.id))
         }
         return try repository.forSite(site.id, equipmentNamePrefix: site.pfIdPrefix, scheduledDate: today)
@@ -330,6 +336,7 @@ struct InspectionFormService {
     let draftRepository: LocalStepDraftRepository
 
     func loadInspection(workOrderId: String) async throws -> (tasks: [WorkTaskEntity], steps: [WorkTaskStepEntity], drafts: [LocalStepDraftEntity]) {
+        // Inspection read path: Work Order -> Work Tasks -> Work Task Steps, then local drafts mirror editable step fields.
         let taskDTOs = try await apiClient.fetchWorkTasks(workOrderId: workOrderId)
         try taskRepository.upsert(taskDTOs)
         let tasks = try taskRepository.forWorkOrder(workOrderId)
@@ -374,6 +381,7 @@ struct InspectionSyncService {
         var uploadedCount = 0
         var firstSyncError: Error?
         for draft in drafts {
+            // Each draft writes back only Work Task Step response fields; Work Orders and Work Tasks are not mutated.
             draft.syncStatus = .uploading
             draft.lastSyncError = nil
             try draftRepository.saveIfNeeded()

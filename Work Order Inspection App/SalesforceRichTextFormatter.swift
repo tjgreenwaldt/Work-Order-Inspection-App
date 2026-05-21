@@ -7,6 +7,7 @@ enum SalesforceRichTextFormatter {
     }
 
     static func htmlToPlainText(_ html: String) -> String {
+        // Salesforce rich text fields can contain simple HTML; the app displays readable plain text without preserving styling.
         let normalizedHTML = html
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
@@ -59,6 +60,7 @@ enum SalesforceRichTextFormatter {
     }
 
     private static func normalizeDisplayWhitespace(_ value: String) -> String {
+        // Collapse editor-generated spacing while preserving intentional line breaks for field instructions.
         let lines = value
             .replacingOccurrences(of: "\u{00a0}", with: " ")
             .components(separatedBy: .newlines)

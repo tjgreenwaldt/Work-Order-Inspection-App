@@ -191,9 +191,7 @@ enum SalesforceSchema {
 
     static func workOrdersForEquipmentNamePrefixQuery(prefix: String) -> String {
         let likePattern = "\(soqlEscape(prefix))%"
-        #if DEBUG
-        // Child-equipment lookup test: real org testing indicates Work Orders may be scheduled against equipment records whose names start with the selected Plant PF ID prefix.
-        #endif
+        // Work Orders are queried by child equipment name prefix because the Plant itself may not be the Work Order equipment.
         return """
         SELECT Id, Name, pffsm__Description__c, pffsm__Equipment__c,
                pffsm__Equipment__r.Name, pffsm__Equipment__r.pffsm__Description__c,
@@ -258,9 +256,7 @@ enum SalesforceSchema {
     }
 
     static func workTasksForWorkOrderQuery(workOrderId: String) -> String {
-        #if DEBUG
-        // Real org testing found multiple optional Work Task fields missing on pffsm__smWO_Task__c. Keep this read path minimal until fields are confirmed by metadata.
-        #endif
+        // Keep Work Task fields minimal: org-specific optional fields vary, and steps carry the editable inspection data.
         """
         SELECT Id, Name, pffsm__Work_Order__c
         FROM pffsm__smWO_Task__c

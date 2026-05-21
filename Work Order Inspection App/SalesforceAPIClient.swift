@@ -186,6 +186,7 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
     }
 
     func fetchWorkOrders(site: SiteDTO, scheduledDate: Date) async throws -> [WorkOrderDTO] {
+        // Plant records identify the site, but Salesforce schedules these inspections on child equipment named with the PF prefix.
         try await fetchWorkOrders(equipmentNamePrefix: site.pfIdPrefix)
     }
 
@@ -241,6 +242,7 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Writeback is intentionally scoped to the editable inspection response fields on pffsm__Work_Task_Step__c.
         let payload: [String: Any] = [
             SalesforceSchema.WorkTaskStepFields.userPicklist: result.salesforceValue,
             SalesforceSchema.WorkTaskStepFields.comments: comments,
