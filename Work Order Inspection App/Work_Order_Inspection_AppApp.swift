@@ -3,7 +3,7 @@ import SwiftData
 
 @main
 struct Work_Order_Inspection_AppApp: App {
-    @StateObject private var appEnvironment = AppEnvironment(apiClient: MockSalesforceAPIClient())
+    @StateObject private var appEnvironment = AppEnvironment(apiClient: SalesforceConfig.current.makeAPIClient())
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([

@@ -130,6 +130,7 @@ enum SalesforceSchema {
     }
 
     static func workOrdersForSiteQuery(siteId: String, scheduledDate: Date) -> String {
+        // TODO: If pffsm__Scheduled_Start_Date__c is DateTime in the target org and TODAY does not match as expected, switch this to a UTC start/end range for the local scheduled day.
         """
         SELECT Id, Name, pffsm__Asset__c, pffsm__Status__c, pffsm__WO_Status__c,
                pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c,

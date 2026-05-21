@@ -119,36 +119,39 @@ struct MockSalesforceAPIClient: SalesforceAPIClient {
 }
 
 final class RealSalesforceAPIClient: SalesforceAPIClient {
+    private let config: SalesforceConfig
     private let urlSession: URLSession
     private var session: SalesforceSession?
 
-    init(urlSession: URLSession = .shared) {
+    init(config: SalesforceConfig = .current, session: SalesforceSession? = nil, urlSession: URLSession = .shared) {
+        self.config = config
+        self.session = session
         self.urlSession = urlSession
     }
 
     func authenticate() async throws -> SalesforceSession {
         // TODO: Implement OAuth 2.0 Authorization Code with PKCE, Connected App client ID, redirect URI, login domain, scopes, keychain storage, and token refresh.
-        throw SalesforceAPIError.notConfigured
+        guard let session else {
+            throw SalesforceAPIError.sessionNotConfigured
+        }
+        return session
     }
 
     func fetchSites() async throws -> [SiteDTO] {
-        _ = try queryRequest(soql: SalesforceSchema.sitesQuery())
-        throw SalesforceAPIError.notConfigured
+        try await executeQuery(SalesforceSchema.sitesQuery(), as: SalesforceSiteRecord.self) { $0.dto }
     }
 
     func fetchWorkOrders(siteId: String, scheduledDate: Date) async throws -> [WorkOrderDTO] {
-        _ = try queryRequest(soql: SalesforceSchema.workOrdersForSiteQuery(siteId: siteId, scheduledDate: scheduledDate))
-        throw SalesforceAPIError.notConfigured
+        try await executeQuery(SalesforceSchema.workOrdersForSiteQuery(siteId: siteId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
     }
 
     func fetchWorkTasks(workOrderId: String) async throws -> [WorkTaskDTO] {
-        _ = try queryRequest(soql: SalesforceSchema.workTasksForWorkOrderQuery(workOrderId: workOrderId))
-        throw SalesforceAPIError.notConfigured
+        try await executeQuery(SalesforceSchema.workTasksForWorkOrderQuery(workOrderId: workOrderId), as: SalesforceWorkTaskRecord.self) { $0.dto }
     }
 
     func fetchWorkTaskSteps(workTaskIds: [String]) async throws -> [WorkTaskStepDTO] {
-        _ = try queryRequest(soql: SalesforceSchema.workTaskStepsForTasksQuery(taskIds: workTaskIds))
-        throw SalesforceAPIError.notConfigured
+        guard workTaskIds.isEmpty == false else { return [] }
+        return try await executeQuery(SalesforceSchema.workTaskStepsForTasksQuery(taskIds: workTaskIds), as: SalesforceWorkTaskStepRecord.self) { $0.dto }
     }
 
     func updateWorkTaskStep(stepId: String, result: StepResult, comments: String, complete: Bool, completedAt: Date) async throws {
@@ -201,13 +204,46 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         throw SalesforceAPIError.notConfigured
     }
 
+    private func executeQuery<Record: Decodable, Output>(_ soql: String, as recordType: Record.Type, map: (Record) throws -> Output) async throws -> [Output] {
+        #if DEBUG
+        print("Salesforce SOQL: \(soql)")
+        #endif
+
+        let request = try queryRequest(soql: soql)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SalesforceAPIError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw SalesforceAPIError.requestFailed(statusCode: httpResponse.statusCode, body: body)
+        }
+
+        do {
+            let queryResponse = try JSONDecoder.salesforce.decode(SalesforceQueryResponse<Record>.self, from: data)
+            return try queryResponse.records.map(map)
+        } catch {
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? ""
+            print("Salesforce decode failed: \(error)")
+            print("Salesforce response body: \(body)")
+            #endif
+            throw SalesforceAPIError.decodingFailed(error.localizedDescription)
+        }
+    }
+
     private func queryRequest(soql: String) throws -> URLRequest {
-        guard var components = URLComponents(url: try instanceURL().appending(path: "/services/data/\(SalesforceSchema.apiVersion)/query"), resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: try instanceURL(), resolvingAgainstBaseURL: false) else {
             throw SalesforceAPIError.invalidURL
         }
+        components.path = "/services/data/\(config.apiVersion)/query"
         components.queryItems = [URLQueryItem(name: "q", value: soql)]
         guard let url = components.url else { throw SalesforceAPIError.invalidURL }
-        return try authorizedRequest(url: url)
+        var request = try authorizedRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
     }
 
     private func authorizedRequest(path: String) throws -> URLRequest {
@@ -215,30 +251,348 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
     }
 
     private func authorizedRequest(url: URL) throws -> URLRequest {
-        guard let session else { throw SalesforceAPIError.notAuthenticated }
+        guard let session else { throw SalesforceAPIError.sessionNotConfigured }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
         return request
     }
 
     private func instanceURL() throws -> URL {
-        guard let session else { throw SalesforceAPIError.notAuthenticated }
+        guard let session else { throw SalesforceAPIError.sessionNotConfigured }
         return session.instanceURL
     }
 }
 
+struct SalesforceQueryResponse<Record: Decodable>: Decodable {
+    let totalSize: Int
+    let done: Bool
+    let records: [Record]
+}
+
+private struct SalesforceAttributes: Decodable {
+    let type: String?
+    let url: String?
+}
+
+private struct SalesforceSiteRecord: Decodable {
+    let attributes: SalesforceAttributes?
+    let id: String
+    let name: String
+    let assetClass: String
+    let assetSubClass: String?
+    let status: String
+    let siteStatus: String?
+    let plant: String?
+    let plantName: String?
+    let topLevelParent: String?
+    let latitude: Double?
+    let longitude: Double?
+    let stateProvince: String?
+    let nameplateCapacityKW: Double?
+    let uniqueName: String?
+    let externalAssetId: String?
+    let assetUUID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case attributes
+        case id = "Id"
+        case name = "Name"
+        case assetClass = "pffsm__Asset_Class__c"
+        case assetSubClass = "pffsm__Asset_SubClass__c"
+        case status = "pffsm__Status__c"
+        case siteStatus = "pffsm__Site_Status__c"
+        case plant = "pffsm__Plant__c"
+        case plantName = "pffsm__PlantName__c"
+        case topLevelParent = "pffsm__Top_Level_Parent__c"
+        case latitude = "pffsm__Geolocation__Latitude__s"
+        case longitude = "pffsm__Geolocation__Longitude__s"
+        case stateProvince = "pffsm__State_Province__c"
+        case nameplateCapacityKW = "pffsm__Site_Nameplate_Capacity_kW__c"
+        case uniqueName = "pffsm__Unique_Name__c"
+        case externalAssetId = "pffsm__External_Asset_ID__c"
+        case assetUUID = "pffsm__Asset_UUID__c"
+    }
+
+    var dto: SiteDTO {
+        SiteDTO(id: id, name: name, assetClass: assetClass, assetSubClass: assetSubClass, status: status, siteStatus: siteStatus, plant: plant, plantName: plantName, topLevelParent: topLevelParent, latitude: latitude, longitude: longitude, stateProvince: stateProvince, nameplateCapacityKW: nameplateCapacityKW, uniqueName: uniqueName, externalAssetId: externalAssetId, assetUUID: assetUUID)
+    }
+}
+
+private struct SalesforceWorkOrderRecord: Decodable {
+    let attributes: SalesforceAttributes?
+    let id: String
+    let name: String
+    let assetId: String
+    let status: String?
+    let woStatus: String?
+    let woType: String?
+    let priority: String?
+    let scheduledStartDate: Date
+    let scheduledDateTime: Date?
+    let scheduledOnsiteDate: Date?
+    let scheduledCompletionDate: Date?
+    let siteName: String?
+    let siteType: String?
+    let siteAccess: String?
+    let siteInstructions: String?
+    let workOrder18: String?
+    let recordTypeId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case attributes
+        case id = "Id"
+        case name = "Name"
+        case assetId = "pffsm__Asset__c"
+        case status = "pffsm__Status__c"
+        case woStatus = "pffsm__WO_Status__c"
+        case woType = "pffsm__WO_Type__c"
+        case priority = "pffsm__Priority__c"
+        case scheduledStartDate = "pffsm__Scheduled_Start_Date__c"
+        case scheduledDateTime = "pffsm__Scheduled_Date_Time__c"
+        case scheduledOnsiteDate = "pffsm__Scheduled_Onsite_Date__c"
+        case scheduledCompletionDate = "pffsm__Scheduled_Completion_Date__c"
+        case siteName = "pffsm__Site_Name__c"
+        case siteType = "pffsm__Site_Type__c"
+        case siteAccess = "pffsm__Site_Access__c"
+        case siteInstructions = "pffsm__Site_Instructions__c"
+        case workOrder18 = "pffsm__Work_Order_18__c"
+        case recordTypeId = "RecordTypeId"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try container.decodeIfPresent(SalesforceAttributes.self, forKey: .attributes)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        assetId = try container.decode(String.self, forKey: .assetId)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        woStatus = try container.decodeIfPresent(String.self, forKey: .woStatus)
+        woType = try container.decodeIfPresent(String.self, forKey: .woType)
+        priority = try container.decodeIfPresent(String.self, forKey: .priority)
+        scheduledStartDate = try container.decodeSalesforceDate(forKey: .scheduledStartDate) ?? Date.distantPast
+        scheduledDateTime = try container.decodeSalesforceDate(forKey: .scheduledDateTime)
+        scheduledOnsiteDate = try container.decodeSalesforceDate(forKey: .scheduledOnsiteDate)
+        scheduledCompletionDate = try container.decodeSalesforceDate(forKey: .scheduledCompletionDate)
+        siteName = try container.decodeIfPresent(String.self, forKey: .siteName)
+        siteType = try container.decodeIfPresent(String.self, forKey: .siteType)
+        siteAccess = try container.decodeIfPresent(String.self, forKey: .siteAccess)
+        siteInstructions = try container.decodeIfPresent(String.self, forKey: .siteInstructions)
+        workOrder18 = try container.decodeIfPresent(String.self, forKey: .workOrder18)
+        recordTypeId = try container.decodeIfPresent(String.self, forKey: .recordTypeId)
+    }
+
+    var dto: WorkOrderDTO {
+        WorkOrderDTO(id: id, name: name, assetId: assetId, status: status, woStatus: woStatus, woType: woType, priority: priority, scheduledStartDate: scheduledStartDate, scheduledDateTime: scheduledDateTime, scheduledOnsiteDate: scheduledOnsiteDate, scheduledCompletionDate: scheduledCompletionDate, siteName: siteName, siteType: siteType, siteAccess: siteAccess, siteInstructions: siteInstructions, workOrder18: workOrder18, recordTypeId: recordTypeId)
+    }
+}
+
+private struct SalesforceWorkTaskRecord: Decodable {
+    let attributes: SalesforceAttributes?
+    let id: String
+    let name: String
+    let workOrderId: String
+    let assetId: String?
+    let step: Double?
+    let descriptionText: String?
+    let status: String?
+    let scheduleDate: Date?
+    let taskDueDate: Date?
+    let standardFormTemplateId: String?
+    let stdTaskId: String?
+    let totalSteps: Int?
+    let taskStepsCompleted: Int?
+    let wtType: String?
+    let priority: String?
+    let instructionsRT: String?
+    let formValuesJSON: String?
+    let inspectionFormCompleted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case attributes
+        case id = "Id"
+        case name = "Name"
+        case workOrderId = "pffsm__Work_Order__c"
+        case assetId = "pffsm__Asset__c"
+        case step = "pffsm__Step__c"
+        case descriptionText = "pffsm__Description__c"
+        case status = "pffsm__Status__c"
+        case scheduleDate = "pffsm__Schedule_Date__c"
+        case taskDueDate = "pffsm__Task_Due_Date__c"
+        case standardFormTemplateId = "pffsm__Standard_Form_Template__c"
+        case stdTaskId = "pffsm__Std_Task__c"
+        case totalSteps = "pffsm__Total_Steps__c"
+        case taskStepsCompleted = "pffsm__Task_steps_completed__c"
+        case wtType = "pffsm__WT_Type__c"
+        case priority = "pffsm__Priority__c"
+        case instructionsRT = "pffsm__InstructionsRT__c"
+        case formValuesJSON = "pffsm__Form_Values_JSON__c"
+        case inspectionFormCompleted = "pffsm__Inspection_Form_Completed__c"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try container.decodeIfPresent(SalesforceAttributes.self, forKey: .attributes)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        workOrderId = try container.decode(String.self, forKey: .workOrderId)
+        assetId = try container.decodeIfPresent(String.self, forKey: .assetId)
+        step = try container.decodeIfPresent(Double.self, forKey: .step)
+        descriptionText = try container.decodeIfPresent(String.self, forKey: .descriptionText)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        scheduleDate = try container.decodeSalesforceDate(forKey: .scheduleDate)
+        taskDueDate = try container.decodeSalesforceDate(forKey: .taskDueDate)
+        standardFormTemplateId = try container.decodeIfPresent(String.self, forKey: .standardFormTemplateId)
+        stdTaskId = try container.decodeIfPresent(String.self, forKey: .stdTaskId)
+        totalSteps = try container.decodeFlexibleInt(forKey: .totalSteps)
+        taskStepsCompleted = try container.decodeFlexibleInt(forKey: .taskStepsCompleted)
+        wtType = try container.decodeIfPresent(String.self, forKey: .wtType)
+        priority = try container.decodeIfPresent(String.self, forKey: .priority)
+        instructionsRT = try container.decodeIfPresent(String.self, forKey: .instructionsRT)
+        formValuesJSON = try container.decodeIfPresent(String.self, forKey: .formValuesJSON)
+        inspectionFormCompleted = try container.decodeIfPresent(Bool.self, forKey: .inspectionFormCompleted)
+    }
+
+    var dto: WorkTaskDTO {
+        WorkTaskDTO(id: id, name: name, workOrderId: workOrderId, assetId: assetId, step: step, descriptionText: descriptionText, status: status, scheduleDate: scheduleDate, taskDueDate: taskDueDate, standardFormTemplateId: standardFormTemplateId, stdTaskId: stdTaskId, totalSteps: totalSteps, taskStepsCompleted: taskStepsCompleted, wtType: wtType, priority: priority, instructionsRT: instructionsRT, formValuesJSON: formValuesJSON, inspectionFormCompleted: inspectionFormCompleted)
+    }
+}
+
+private struct SalesforceWorkTaskStepRecord: Decodable {
+    let attributes: SalesforceAttributes?
+    let id: String
+    let name: String
+    let workTaskId: String
+    let sequence: Double?
+    let status: String?
+    let complete: Bool
+    let criticalInspection: Bool
+    let userPicklist: String?
+    let userText: String?
+    let value: Double?
+    let comments: String?
+    let recommendedAction: String?
+    let additionalDetails: String?
+    let trackCompleteTime: Date?
+    let externalId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case attributes
+        case id = "Id"
+        case name = "Name"
+        case workTaskId = "pffsm__Work_Task__c"
+        case sequence = "pffsm__Sequence__c"
+        case status = "pffsm__Status__c"
+        case complete = "pffsm__Complete__c"
+        case criticalInspection = "pffsm__Critical_Inspection__c"
+        case userPicklist = "pffsm__User_Picklist__c"
+        case userText = "pffsm__User_Text__c"
+        case value = "pffsm__Value__c"
+        case comments = "pffsm__Comments__c"
+        case recommendedAction = "pffsm__Recommended_Action__c"
+        case additionalDetails = "pffsm__Additional_Details__c"
+        case trackCompleteTime = "pffsm__Track_Complete_Time__c"
+        case externalId = "pffsm__PF_External_Id__c"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try container.decodeIfPresent(SalesforceAttributes.self, forKey: .attributes)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        workTaskId = try container.decode(String.self, forKey: .workTaskId)
+        sequence = try container.decodeIfPresent(Double.self, forKey: .sequence)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        complete = try container.decodeIfPresent(Bool.self, forKey: .complete) ?? false
+        criticalInspection = try container.decodeIfPresent(Bool.self, forKey: .criticalInspection) ?? false
+        userPicklist = try container.decodeIfPresent(String.self, forKey: .userPicklist)
+        userText = try container.decodeIfPresent(String.self, forKey: .userText)
+        value = try container.decodeIfPresent(Double.self, forKey: .value)
+        comments = try container.decodeIfPresent(String.self, forKey: .comments)
+        recommendedAction = try container.decodeIfPresent(String.self, forKey: .recommendedAction)
+        additionalDetails = try container.decodeIfPresent(String.self, forKey: .additionalDetails)
+        trackCompleteTime = try container.decodeSalesforceDate(forKey: .trackCompleteTime)
+        externalId = try container.decodeIfPresent(String.self, forKey: .externalId)
+    }
+
+    var dto: WorkTaskStepDTO {
+        WorkTaskStepDTO(id: id, name: name, workTaskId: workTaskId, sequence: sequence, status: status, complete: complete, criticalInspection: criticalInspection, userPicklist: userPicklist, userText: userText, value: value, comments: comments, recommendedAction: recommendedAction, additionalDetails: additionalDetails, trackCompleteTime: trackCompleteTime, externalId: externalId)
+    }
+}
+
+private extension JSONDecoder {
+    static let salesforce: JSONDecoder = JSONDecoder()
+}
+
+private extension KeyedDecodingContainer {
+    func decodeSalesforceDate(forKey key: Key) throws -> Date? {
+        guard let value = try decodeIfPresent(String.self, forKey: key) else {
+            return nil
+        }
+        return SalesforceDateParser.parse(value)
+    }
+
+    func decodeFlexibleInt(forKey key: Key) throws -> Int? {
+        if let intValue = try decodeIfPresent(Int.self, forKey: key) {
+            return intValue
+        }
+        if let doubleValue = try decodeIfPresent(Double.self, forKey: key) {
+            return Int(doubleValue)
+        }
+        return nil
+    }
+}
+
+private enum SalesforceDateParser {
+    static func parse(_ value: String) -> Date? {
+        if let date = ISO8601DateFormatter.salesforceInternetDateTime.date(from: value) {
+            return date
+        }
+        if let date = ISO8601DateFormatter.salesforceInternetDateTimeNoFraction.date(from: value) {
+            return date
+        }
+        return DateFormatter.salesforceDateOnly.date(from: value)
+    }
+}
+
+private extension ISO8601DateFormatter {
+    static let salesforceInternetDateTimeNoFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
+
+private extension DateFormatter {
+    static let salesforceDateOnly: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+}
+
 enum SalesforceAPIError: LocalizedError {
     case notAuthenticated
+    case sessionNotConfigured
     case notConfigured
     case invalidURL
+    case invalidResponse
+    case requestFailed(statusCode: Int, body: String)
+    case decodingFailed(String)
     case mockFetchFailure
     case mockSyncFailure
 
     var errorDescription: String? {
         switch self {
         case .notAuthenticated: "Salesforce session is not authenticated."
+        case .sessionNotConfigured: "Salesforce session is not configured."
         case .notConfigured: "Real Salesforce integration is not configured yet. Use MockSalesforceAPIClient for local app runs."
         case .invalidURL: "Could not build Salesforce REST URL."
+        case .invalidResponse: "Salesforce returned an invalid response."
+        case let .requestFailed(statusCode, body): "Salesforce request failed with HTTP \(statusCode). \(body)"
+        case let .decodingFailed(message): "Could not decode Salesforce response. \(message)"
         case .mockFetchFailure: "Mock fetch failure. Disable simulateFetchFailure and try again."
         case .mockSyncFailure: "Mock sync failure. Remove 'simulate sync failure' from comments and retry."
         }
