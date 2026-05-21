@@ -353,6 +353,7 @@ struct WorkOrderDetailView: View {
     @State private var didLoadInspection = false
     @State private var shouldOpenInspection = false
     @State private var stepCount = 0
+    @State private var isRetryingSync = false
 
     var body: some View {
         List {
@@ -391,6 +392,16 @@ struct WorkOrderDetailView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                Button {
+                    Task { await retrySync() }
+                } label: {
+                    if isRetryingSync {
+                        ProgressView()
+                    } else {
+                        Label("Retry Sync", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+                .disabled(isRetryingSync)
                 if taskCount > 0 {
                     LabeledContent("Work Tasks", value: "\(taskCount)")
                 }
@@ -459,6 +470,26 @@ struct WorkOrderDetailView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func retrySync() async {
+        isRetryingSync = true
+        errorMessage = nil
+        let syncService = InspectionSyncService(
+            apiClient: appEnvironment.apiClient,
+            draftRepository: LocalStepDraftRepository(modelContext: modelContext)
+        )
+        do {
+            _ = try await syncService.syncPendingStepUpdates()
+            appEnvironment.recordWorkOrderSyncSuccess(workOrderId: workOrder.id)
+        } catch {
+            appEnvironment.recordWorkOrderSyncFailure(
+                workOrderId: workOrder.id,
+                error: error,
+                isConnectivityError: InspectionSyncService.isConnectivityError(error)
+            )
+        }
+        isRetryingSync = false
     }
 }
 

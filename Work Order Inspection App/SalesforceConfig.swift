@@ -15,13 +15,15 @@ struct SalesforceConfig {
     let useMockClient: Bool
     let oauthScopes: [String]
 
+    static let defaultOrgBaseURL = URL(string: "https://pfdrive-origis.my.salesforce.com")!
+
     static let current = SalesforceConfig(
         apiVersion: SalesforceSchema.apiVersion,
-        loginBaseURL: URL(string: "https://test.salesforce.com")!,
-        instanceBaseURL: nil,
+        loginBaseURL: defaultOrgBaseURL,
+        instanceBaseURL: defaultOrgBaseURL,
         connectedAppClientId: "TODO_CONNECTED_APP_CLIENT_ID",
         redirectURI: "work-order-inspection-app://oauth/callback",
-        environment: .sandbox,
+        environment: .production,
         useMockClient: true,
         oauthScopes: ["api", "refresh_token", "openid", "profile"]
     )

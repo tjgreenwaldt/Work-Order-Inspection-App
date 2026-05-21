@@ -249,10 +249,20 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
+        #if DEBUG
+        if let payloadData = request.httpBody,
+           let payloadText = String(data: payloadData, encoding: .utf8) {
+            print("Salesforce PATCH Work Task Step \(stepId) payload: \(payloadText)")
+        }
+        #endif
+
         let (data, response) = try await urlSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SalesforceAPIError.invalidResponse
         }
+        #if DEBUG
+        print("Salesforce PATCH Work Task Step \(stepId) response status: \(httpResponse.statusCode)")
+        #endif
         guard (200..<300).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw SalesforceAPIError.requestFailed(statusCode: httpResponse.statusCode, body: body)
@@ -540,7 +550,7 @@ final class SalesforceOAuthSession: NSObject, ASWebAuthenticationPresentationCon
             "refresh_token": refreshToken
         ]
         let tokenResponse: SalesforceTokenResponse = try await postTokenRequest(body: body)
-        return tokenResponse.session(refreshTokenFallback: refreshToken)
+        return try tokenResponse.session(refreshTokenFallback: refreshToken, instanceURLFallback: config.instanceBaseURL)
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
@@ -627,7 +637,7 @@ final class SalesforceOAuthSession: NSObject, ASWebAuthenticationPresentationCon
             "code_verifier": verifier
         ]
         let tokenResponse: SalesforceTokenResponse = try await postTokenRequest(body: body)
-        return tokenResponse.session(refreshTokenFallback: nil)
+        return try tokenResponse.session(refreshTokenFallback: nil, instanceURLFallback: config.instanceBaseURL)
     }
 
     private func postTokenRequest<T: Decodable>(body: [String: String]) async throws -> T {
@@ -686,7 +696,7 @@ private extension Data {
 private struct SalesforceTokenResponse: Decodable {
     let accessToken: String
     let refreshToken: String?
-    let instanceURL: URL
+    let instanceURL: URL?
     let issuedAtMilliseconds: String?
     let expiresIn: TimeInterval?
 
@@ -698,15 +708,18 @@ private struct SalesforceTokenResponse: Decodable {
         case expiresIn = "expires_in"
     }
 
-    func session(refreshTokenFallback: String?) -> SalesforceSession {
+    func session(refreshTokenFallback: String?, instanceURLFallback: URL?) throws -> SalesforceSession {
         let issuedAt = issuedAtMilliseconds
             .flatMap(Double.init)
             .map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
         let expiresAt = expiresIn.map { issuedAt.addingTimeInterval($0) }
+        guard let resolvedInstanceURL = instanceURL ?? instanceURLFallback else {
+            throw SalesforceAPIError.sessionNotConfigured
+        }
         return SalesforceSession(
             accessToken: accessToken,
             refreshToken: refreshToken ?? refreshTokenFallback,
-            instanceURL: instanceURL,
+            instanceURL: resolvedInstanceURL,
             issuedAt: issuedAt,
             expiresAt: expiresAt
         )
