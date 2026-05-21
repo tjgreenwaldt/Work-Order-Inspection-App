@@ -1,15 +1,22 @@
+import AuthenticationServices
+import CryptoKit
 import Foundation
+import Security
+import UIKit
 
 struct SalesforceSession: Equatable {
     let accessToken: String
+    let refreshToken: String?
     let instanceURL: URL
-    let userId: String
-    let expiresAt: Date
+    let issuedAt: Date?
+    let expiresAt: Date?
 }
 
 protocol SalesforceAPIClient {
     func authenticate() async throws -> SalesforceSession
+    func logout() async throws
     func fetchSites() async throws -> [SiteDTO]
+    func fetchWorkOrders(site: SiteDTO, scheduledDate: Date) async throws -> [WorkOrderDTO]
     func fetchWorkOrders(siteId: String, scheduledDate: Date) async throws -> [WorkOrderDTO]
     func fetchWorkTasks(workOrderId: String) async throws -> [WorkTaskDTO]
     func fetchWorkTaskSteps(workTaskIds: [String]) async throws -> [WorkTaskStepDTO]
@@ -33,16 +40,18 @@ struct MockSalesforceAPIClient: SalesforceAPIClient {
 
     func authenticate() async throws -> SalesforceSession {
         try await Task.sleep(nanoseconds: clockDelay)
-        return SalesforceSession(accessToken: "mock-access-token", instanceURL: URL(string: "https://mock.salesforce.local")!, userId: "005-MOCK-USER", expiresAt: Date().addingTimeInterval(3600))
+        return SalesforceSession(accessToken: "mock-access-token", refreshToken: nil, instanceURL: URL(string: "https://mock.salesforce.local")!, issuedAt: Date(), expiresAt: Date().addingTimeInterval(3600))
     }
+
+    func logout() async throws { }
 
     func fetchSites() async throws -> [SiteDTO] {
         try await Task.sleep(nanoseconds: clockDelay)
         try throwFetchFailureIfNeeded()
         return [
-            SiteDTO(id: "a10PLANT001", name: "North Solar Plant", assetClass: "Plant", assetSubClass: "Solar", status: "In Service", siteStatus: "Operational", plant: "NSP", plantName: "North Solar Plant", topLevelParent: nil, latitude: 41.88, longitude: -87.63, stateProvince: "IL", nameplateCapacityKW: 12500, uniqueName: "NSP-001", externalAssetId: "EXT-NSP-001", assetUUID: "UUID-NSP-001"),
-            SiteDTO(id: "a10PLANT002", name: "West Wind Plant", assetClass: "Plant", assetSubClass: "Wind", status: "In Service", siteStatus: "Operational", plant: "WWP", plantName: "West Wind Plant", topLevelParent: nil, latitude: 42.03, longitude: -88.11, stateProvince: "IL", nameplateCapacityKW: 25000, uniqueName: "WWP-002", externalAssetId: "EXT-WWP-002", assetUUID: "UUID-WWP-002"),
-            SiteDTO(id: "a10PLANT003", name: "River Battery Plant", assetClass: "Plant", assetSubClass: "Storage", status: "In Service", siteStatus: "Operational", plant: "RBP", plantName: "River Battery Plant", topLevelParent: nil, latitude: 40.73, longitude: -89.61, stateProvince: "IL", nameplateCapacityKW: 9000, uniqueName: "RBP-003", externalAssetId: "EXT-RBP-003", assetUUID: "UUID-RBP-003")
+            SiteDTO(id: "a10PLANT001", name: "North Solar Plant", friendlyName: "North Solar Plant", assetClass: "Plant", assetSubClass: "Solar", status: "In Service", siteStatus: "Operational", plant: "NSP", plantName: "North Solar Plant", topLevelParent: nil, latitude: 41.88, longitude: -87.63, stateProvince: "IL", nameplateCapacityKW: 12500, uniqueName: "NSP-001", externalAssetId: "EXT-NSP-001", assetUUID: "UUID-NSP-001"),
+            SiteDTO(id: "a10PLANT002", name: "West Wind Plant", friendlyName: "West Wind Plant", assetClass: "Plant", assetSubClass: "Wind", status: "In Service", siteStatus: "Operational", plant: "WWP", plantName: "West Wind Plant", topLevelParent: nil, latitude: 42.03, longitude: -88.11, stateProvince: "IL", nameplateCapacityKW: 25000, uniqueName: "WWP-002", externalAssetId: "EXT-WWP-002", assetUUID: "UUID-WWP-002"),
+            SiteDTO(id: "a10PLANT003", name: "River Battery Plant", friendlyName: "River Battery Plant", assetClass: "Plant", assetSubClass: "Storage", status: "In Service", siteStatus: "Operational", plant: "RBP", plantName: "River Battery Plant", topLevelParent: nil, latitude: 40.73, longitude: -89.61, stateProvince: "IL", nameplateCapacityKW: 9000, uniqueName: "RBP-003", externalAssetId: "EXT-RBP-003", assetUUID: "UUID-RBP-003")
         ]
     }
 
@@ -51,11 +60,15 @@ struct MockSalesforceAPIClient: SalesforceAPIClient {
         try throwFetchFailureIfNeeded()
         let today = Calendar.current.startOfDay(for: scheduledDate)
         let orders = [
-            WorkOrderDTO(id: "a20WO001", name: "WO-000451", assetId: "a10PLANT001", status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "High", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "North Solar Plant", siteType: "Solar", siteAccess: "Gate code in dispatch notes", siteInstructions: "Check in with site operator before entering inverter pad.", workOrder18: "a20WO001000000AAA", recordTypeId: "012MOCKINSPECTION"),
-            WorkOrderDTO(id: "a20WO002", name: "WO-000452", assetId: "a10PLANT001", status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "Medium", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "North Solar Plant", siteType: "Solar", siteAccess: "Standard access", siteInstructions: "Inspect combiner area after inverter checks.", workOrder18: "a20WO002000000AAA", recordTypeId: "012MOCKINSPECTION"),
-            WorkOrderDTO(id: "a20WO003", name: "WO-000601", assetId: "a10PLANT002", status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "Low", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "West Wind Plant", siteType: "Wind", siteAccess: "Escort required", siteInstructions: "Call control room on arrival.", workOrder18: "a20WO003000000AAA", recordTypeId: "012MOCKINSPECTION")
+            WorkOrderDTO(id: "a20WO001", name: "WO-000451", assetId: "a10PLANT001", assetName: "North Solar Plant Inverter 1", descriptionText: "Monthly inverter inspection", assetDescription: "Inverter 1", accountId: nil, accountSR: nil, status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "High", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "North Solar Plant", siteType: "Solar", siteAccess: "Gate code in dispatch notes", siteInstructions: "Check in with site operator before entering inverter pad.", workOrder18: "a20WO001000000AAA", recordTypeId: "012MOCKINSPECTION"),
+            WorkOrderDTO(id: "a20WO002", name: "WO-000452", assetId: "a10PLANT001", assetName: "North Solar Plant Combiner A", descriptionText: "Combiner area inspection", assetDescription: "Combiner A", accountId: nil, accountSR: nil, status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "Medium", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "North Solar Plant", siteType: "Solar", siteAccess: "Standard access", siteInstructions: "Inspect combiner area after inverter checks.", workOrder18: "a20WO002000000AAA", recordTypeId: "012MOCKINSPECTION"),
+            WorkOrderDTO(id: "a20WO003", name: "WO-000601", assetId: "a10PLANT002", assetName: "West Wind Plant Turbine 3", descriptionText: "Turbine inspection", assetDescription: "Turbine 3", accountId: nil, accountSR: nil, status: "Open", woStatus: "Scheduled", woType: "Inspection", priority: "Low", scheduledStartDate: today, scheduledDateTime: Date(), scheduledOnsiteDate: today, scheduledCompletionDate: nil, siteName: "West Wind Plant", siteType: "Wind", siteAccess: "Escort required", siteInstructions: "Call control room on arrival.", workOrder18: "a20WO003000000AAA", recordTypeId: "012MOCKINSPECTION")
         ]
         return orders.filter { $0.assetId == siteId }
+    }
+
+    func fetchWorkOrders(site: SiteDTO, scheduledDate: Date) async throws -> [WorkOrderDTO] {
+        try await fetchWorkOrders(siteId: site.id, scheduledDate: scheduledDate)
     }
 
     func fetchWorkTasks(workOrderId: String) async throws -> [WorkTaskDTO] {
@@ -74,6 +87,7 @@ struct MockSalesforceAPIClient: SalesforceAPIClient {
     }
 
     func fetchWorkTaskSteps(workTaskIds: [String]) async throws -> [WorkTaskStepDTO] {
+        guard workTaskIds.isEmpty == false else { return [] }
         try await Task.sleep(nanoseconds: clockDelay)
         try throwFetchFailureIfNeeded()
         let steps = [
@@ -121,28 +135,77 @@ struct MockSalesforceAPIClient: SalesforceAPIClient {
 final class RealSalesforceAPIClient: SalesforceAPIClient {
     private let config: SalesforceConfig
     private let urlSession: URLSession
+    private let tokenStore: SalesforceTokenStore
+    private let oauthSession: SalesforceOAuthSession
     private var session: SalesforceSession?
 
-    init(config: SalesforceConfig = .current, session: SalesforceSession? = nil, urlSession: URLSession = .shared) {
+    init(config: SalesforceConfig = .current, session: SalesforceSession? = nil, urlSession: URLSession = .shared, tokenStore: SalesforceTokenStore = KeychainSalesforceTokenStore()) {
         self.config = config
         self.session = session
         self.urlSession = urlSession
+        self.tokenStore = tokenStore
+        self.oauthSession = SalesforceOAuthSession(config: config, urlSession: urlSession)
     }
 
     func authenticate() async throws -> SalesforceSession {
-        // TODO: Implement OAuth 2.0 Authorization Code with PKCE, Connected App client ID, redirect URI, login domain, scopes, keychain storage, and token refresh.
-        guard let session else {
-            throw SalesforceAPIError.sessionNotConfigured
+        if let validSession = try loadStoredSessionIfUsable() {
+            session = validSession
+            return validSession
         }
-        return session
+
+        if let refreshedSession = try await refreshStoredSessionIfPossible() {
+            session = refreshedSession
+            return refreshedSession
+        }
+
+        let newSession = try await oauthSession.login()
+        try tokenStore.save(newSession)
+        session = newSession
+        return newSession
+    }
+
+    func logout() async throws {
+        try tokenStore.clear()
+        session = nil
     }
 
     func fetchSites() async throws -> [SiteDTO] {
         try await executeQuery(SalesforceSchema.sitesQuery(), as: SalesforceSiteRecord.self) { $0.dto }
+            .filter { SiteRepository.isLikelyPlantSiteName($0.name) }
     }
 
     func fetchWorkOrders(siteId: String, scheduledDate: Date) async throws -> [WorkOrderDTO] {
-        try await executeQuery(SalesforceSchema.workOrdersForSiteQuery(siteId: siteId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
+        do {
+            return try await executeQuery(SalesforceSchema.workOrdersForSiteQuery(siteId: siteId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
+        } catch {
+            guard shouldRetryWorkOrderTodayQueryWithDateRange(error) else {
+                throw error
+            }
+            return try await executeQuery(SalesforceSchema.workOrdersForSiteDateRangeQuery(siteId: siteId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
+        }
+    }
+
+    func fetchWorkOrders(site: SiteDTO, scheduledDate: Date) async throws -> [WorkOrderDTO] {
+        try await fetchWorkOrders(equipmentNamePrefix: site.pfIdPrefix)
+    }
+
+    func fetchWorkOrders(accountId: String, scheduledDate: Date) async throws -> [WorkOrderDTO] {
+        do {
+            return try await executeQuery(SalesforceSchema.workOrdersForAccountQuery(accountId: accountId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
+        } catch {
+            guard shouldRetryWorkOrderTodayQueryWithDateRange(error) else {
+                throw error
+            }
+            return try await executeQuery(SalesforceSchema.workOrdersForAccountDateRangeQuery(accountId: accountId, scheduledDate: scheduledDate), as: SalesforceWorkOrderRecord.self) { $0.dto }
+        }
+    }
+
+    func fetchWorkOrders(equipmentNamePrefix: String) async throws -> [WorkOrderDTO] {
+        try await executeQuery(SalesforceSchema.workOrdersForEquipmentNamePrefixQuery(prefix: equipmentNamePrefix), as: SalesforceWorkOrderRecord.self) { $0.dto }
+    }
+
+    func fetchWorkOrdersForLast30Days(equipmentNamePrefix: String) async throws -> [WorkOrderDTO] {
+        try await executeQuery(SalesforceSchema.workOrdersForEquipmentNamePrefixLast30DaysQuery(prefix: equipmentNamePrefix), as: SalesforceWorkOrderRecord.self) { $0.dto }
     }
 
     func fetchWorkTasks(workOrderId: String) async throws -> [WorkTaskDTO] {
@@ -154,10 +217,30 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         return try await executeQuery(SalesforceSchema.workTaskStepsForTasksQuery(taskIds: workTaskIds), as: SalesforceWorkTaskStepRecord.self) { $0.dto }
     }
 
+    #if DEBUG
+    func testSiteFriendlyNameFields() async -> [SalesforceFieldDiscoveryResult] {
+        var results: [SalesforceFieldDiscoveryResult] = []
+        for field in SalesforceSchema.siteFriendlyNameCandidateFields {
+            do {
+                let records = try await executeRawSiteFriendlyNameQuery(fieldAPIName: field)
+                let values = records.compactMap { record in
+                    record.value(for: field)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .filter { $0.isEmpty == false }
+                results.append(SalesforceFieldDiscoveryResult(fieldName: field, isAvailable: true, sampleValues: Array(values.prefix(5)), errorMessage: nil))
+            } catch {
+                results.append(SalesforceFieldDiscoveryResult(fieldName: field, isAvailable: false, sampleValues: [], errorMessage: error.localizedDescription))
+            }
+        }
+        return results
+    }
+    #endif
+
     func updateWorkTaskStep(stepId: String, result: StepResult, comments: String, complete: Bool, completedAt: Date) async throws {
         var request = try authorizedRequest(path: SalesforceSchema.workTaskStepPatchPath(stepId: stepId))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         let payload: [String: Any] = [
             SalesforceSchema.WorkTaskStepFields.userPicklist: result.salesforceValue,
             SalesforceSchema.WorkTaskStepFields.comments: comments,
@@ -165,8 +248,15 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
             SalesforceSchema.WorkTaskStepFields.trackCompleteTime: ISO8601DateFormatter.salesforceInternetDateTime.string(from: completedAt)
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        _ = (request, urlSession)
-        throw SalesforceAPIError.notConfigured
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SalesforceAPIError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw SalesforceAPIError.requestFailed(statusCode: httpResponse.statusCode, body: body)
+        }
     }
 
     func uploadContentVersion(fileName: String, mimeType: String, data: Data) async throws -> String {
@@ -200,8 +290,17 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
     }
 
     func refreshTokenIfNeeded() async throws {
-        // TODO: Refresh OAuth token before expiry and update secure token storage.
-        throw SalesforceAPIError.notConfigured
+        if let validSession = try loadStoredSessionIfUsable() {
+            session = validSession
+            return
+        }
+
+        if let refreshedSession = try await refreshStoredSessionIfPossible() {
+            session = refreshedSession
+            return
+        }
+
+        throw SalesforceAPIError.loginRequired
     }
 
     private func executeQuery<Record: Decodable, Output>(_ soql: String, as recordType: Record.Type, map: (Record) throws -> Output) async throws -> [Output] {
@@ -209,6 +308,7 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         print("Salesforce SOQL: \(soql)")
         #endif
 
+        try await refreshTokenIfNeeded()
         let request = try queryRequest(soql: soql)
         let (data, response) = try await urlSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -232,6 +332,25 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
             throw SalesforceAPIError.decodingFailed(error.localizedDescription)
         }
     }
+
+    #if DEBUG
+    private func executeRawSiteFriendlyNameQuery(fieldAPIName: String) async throws -> [SalesforceSiteFriendlyNameRecord] {
+        let soql = SalesforceSchema.siteFriendlyNameCandidateQuery(fieldAPIName: fieldAPIName)
+        print("Salesforce SOQL: \(soql)")
+        try await refreshTokenIfNeeded()
+        let request = try queryRequest(soql: soql)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SalesforceAPIError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw SalesforceAPIError.requestFailed(statusCode: httpResponse.statusCode, body: body)
+        }
+        let queryResponse = try JSONDecoder.salesforce.decode(SalesforceQueryResponse<SalesforceSiteFriendlyNameRecord>.self, from: data)
+        return queryResponse.records
+    }
+    #endif
 
     private func queryRequest(soql: String) throws -> URLRequest {
         guard var components = URLComponents(url: try instanceURL(), resolvingAgainstBaseURL: false) else {
@@ -261,6 +380,337 @@ final class RealSalesforceAPIClient: SalesforceAPIClient {
         guard let session else { throw SalesforceAPIError.sessionNotConfigured }
         return session.instanceURL
     }
+
+    private func loadStoredSessionIfUsable() throws -> SalesforceSession? {
+        let storedSession = try tokenStore.load()
+        guard let storedSession else {
+            return session?.isUsable == true ? session : nil
+        }
+
+        return storedSession.isUsable ? storedSession : nil
+    }
+
+    private func refreshStoredSessionIfPossible() async throws -> SalesforceSession? {
+        let storedSession = try tokenStore.load() ?? session
+        guard let refreshToken = storedSession?.refreshToken, refreshToken.isEmpty == false else {
+            return nil
+        }
+
+        let refreshedSession = try await oauthSession.refresh(refreshToken: refreshToken)
+        try tokenStore.save(refreshedSession)
+        return refreshedSession
+    }
+
+    private func shouldRetryWorkOrderTodayQueryWithDateRange(_ error: Error) -> Bool {
+        guard case let SalesforceAPIError.requestFailed(_, body) = error else {
+            return false
+        }
+        let lowercasedBody = body.lowercased()
+        return lowercasedBody.contains("scheduled_start_date")
+            || lowercasedBody.contains("today")
+            || lowercasedBody.contains("date")
+            || lowercasedBody.contains("datetime")
+            || lowercasedBody.contains("invalid_field")
+    }
+}
+
+private extension SalesforceSession {
+    var isUsable: Bool {
+        if let expiresAt {
+            return expiresAt.timeIntervalSinceNow > 120
+        }
+        return accessToken.isEmpty == false
+    }
+}
+
+protocol SalesforceTokenStore {
+    func load() throws -> SalesforceSession?
+    func save(_ session: SalesforceSession) throws
+    func clear() throws
+}
+
+struct KeychainSalesforceTokenStore: SalesforceTokenStore {
+    private let service = "WorkOrderInspectionApp.SalesforceOAuth"
+    private let account = "SalesforceSession"
+
+    func load() throws -> SalesforceSession? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw SalesforceAPIError.keychainFailure(status)
+        }
+        guard let data = item as? Data else {
+            return nil
+        }
+        return try JSONDecoder.salesforce.decode(KeychainSession.self, from: data).session
+    }
+
+    func save(_ session: SalesforceSession) throws {
+        let data = try JSONEncoder().encode(KeychainSession(session: session))
+        try clear()
+        var query = baseQuery
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw SalesforceAPIError.keychainFailure(status)
+        }
+    }
+
+    func clear() throws {
+        let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw SalesforceAPIError.keychainFailure(status)
+        }
+    }
+
+    private var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+}
+
+struct EphemeralSalesforceTokenStore: SalesforceTokenStore {
+    func load() throws -> SalesforceSession? { nil }
+    func save(_ session: SalesforceSession) throws { }
+    func clear() throws { }
+}
+
+private struct KeychainSession: Codable {
+    let accessToken: String
+    let refreshToken: String?
+    let instanceURL: URL
+    let issuedAt: Date?
+    let expiresAt: Date?
+
+    init(session: SalesforceSession) {
+        accessToken = session.accessToken
+        refreshToken = session.refreshToken
+        instanceURL = session.instanceURL
+        issuedAt = session.issuedAt
+        expiresAt = session.expiresAt
+    }
+
+    var session: SalesforceSession {
+        SalesforceSession(accessToken: accessToken, refreshToken: refreshToken, instanceURL: instanceURL, issuedAt: issuedAt, expiresAt: expiresAt)
+    }
+}
+
+final class SalesforceOAuthSession: NSObject, ASWebAuthenticationPresentationContextProviding {
+    private let config: SalesforceConfig
+    private let urlSession: URLSession
+    private var webAuthenticationSession: ASWebAuthenticationSession?
+
+    init(config: SalesforceConfig, urlSession: URLSession) {
+        self.config = config
+        self.urlSession = urlSession
+    }
+
+    func login() async throws -> SalesforceSession {
+        guard config.connectedAppClientId.hasPrefix("TODO") == false else {
+            throw SalesforceAPIError.oauthNotConfigured
+        }
+
+        let verifier = PKCE.generateCodeVerifier()
+        let state = UUID().uuidString
+        let authorizationURL = try authorizationURL(codeChallenge: PKCE.codeChallenge(for: verifier), state: state)
+        let callbackURL = try await startAuthenticationSession(url: authorizationURL)
+        let code = try parseAuthorizationCode(from: callbackURL, expectedState: state)
+        return try await exchangeCodeForToken(code: code, verifier: verifier)
+    }
+
+    func refresh(refreshToken: String) async throws -> SalesforceSession {
+        guard config.connectedAppClientId.hasPrefix("TODO") == false else {
+            throw SalesforceAPIError.oauthNotConfigured
+        }
+
+        let body = [
+            "grant_type": "refresh_token",
+            "client_id": config.connectedAppClientId,
+            "refresh_token": refreshToken
+        ]
+        let tokenResponse: SalesforceTokenResponse = try await postTokenRequest(body: body)
+        return tokenResponse.session(refreshTokenFallback: refreshToken)
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let keyWindow = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+        if let keyWindow {
+            return keyWindow
+        }
+
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+        if let windowScene {
+            return ASPresentationAnchor(windowScene: windowScene)
+        }
+
+        preconditionFailure("ASWebAuthenticationSession requires an active window scene.")
+    }
+
+    private func authorizationURL(codeChallenge: String, state: String) throws -> URL {
+        guard var components = URLComponents(url: config.loginBaseURL.appending(path: "/services/oauth2/authorize"), resolvingAgainstBaseURL: false) else {
+            throw SalesforceAPIError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: config.connectedAppClientId),
+            URLQueryItem(name: "redirect_uri", value: config.redirectURI),
+            URLQueryItem(name: "scope", value: config.oauthScopes.joined(separator: " ")),
+            URLQueryItem(name: "code_challenge", value: codeChallenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state)
+        ]
+        guard let url = components.url else {
+            throw SalesforceAPIError.invalidURL
+        }
+        return url
+    }
+
+    private func startAuthenticationSession(url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: config.callbackURLScheme) { callbackURL, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let callbackURL else {
+                    continuation.resume(throwing: SalesforceAPIError.invalidOAuthCallback)
+                    return
+                }
+                continuation.resume(returning: callbackURL)
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            webAuthenticationSession = session
+            session.start()
+        }
+    }
+
+    private func parseAuthorizationCode(from callbackURL: URL, expectedState: String) throws -> String {
+        guard let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) else {
+            throw SalesforceAPIError.invalidOAuthCallback
+        }
+        let queryItems = components.queryItems ?? []
+        if let error = queryItems.first(where: { $0.name == "error" })?.value {
+            throw SalesforceAPIError.oauthFailed(error)
+        }
+        guard queryItems.first(where: { $0.name == "state" })?.value == expectedState else {
+            throw SalesforceAPIError.invalidOAuthCallback
+        }
+        guard let code = queryItems.first(where: { $0.name == "code" })?.value else {
+            throw SalesforceAPIError.invalidOAuthCallback
+        }
+        return code
+    }
+
+    private func exchangeCodeForToken(code: String, verifier: String) async throws -> SalesforceSession {
+        let body = [
+            "grant_type": "authorization_code",
+            "client_id": config.connectedAppClientId,
+            "redirect_uri": config.redirectURI,
+            "code": code,
+            "code_verifier": verifier
+        ]
+        let tokenResponse: SalesforceTokenResponse = try await postTokenRequest(body: body)
+        return tokenResponse.session(refreshTokenFallback: nil)
+    }
+
+    private func postTokenRequest<T: Decodable>(body: [String: String]) async throws -> T {
+        var request = URLRequest(url: config.loginBaseURL.appending(path: "/services/oauth2/token"))
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = formURLEncoded(body).data(using: .utf8)
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SalesforceAPIError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let responseBody = String(data: data, encoding: .utf8) ?? ""
+            throw SalesforceAPIError.requestFailed(statusCode: httpResponse.statusCode, body: responseBody)
+        }
+        return try JSONDecoder.salesforce.decode(T.self, from: data)
+    }
+
+    private func formURLEncoded(_ values: [String: String]) -> String {
+        values
+            .map { key, value in
+                "\(percentEncode(key))=\(percentEncode(value))"
+            }
+            .joined(separator: "&")
+    }
+
+    private func percentEncode(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: ":#[]@!$&'()*+,;=")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
+private enum PKCE {
+    static func generateCodeVerifier() -> String {
+        let bytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        return Data(bytes).base64URLEncodedString()
+    }
+
+    static func codeChallenge(for verifier: String) -> String {
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        return Data(digest).base64URLEncodedString()
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private struct SalesforceTokenResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String?
+    let instanceURL: URL
+    let issuedAtMilliseconds: String?
+    let expiresIn: TimeInterval?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case instanceURL = "instance_url"
+        case issuedAtMilliseconds = "issued_at"
+        case expiresIn = "expires_in"
+    }
+
+    func session(refreshTokenFallback: String?) -> SalesforceSession {
+        let issuedAt = issuedAtMilliseconds
+            .flatMap(Double.init)
+            .map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+        let expiresAt = expiresIn.map { issuedAt.addingTimeInterval($0) }
+        return SalesforceSession(
+            accessToken: accessToken,
+            refreshToken: refreshToken ?? refreshTokenFallback,
+            instanceURL: instanceURL,
+            issuedAt: issuedAt,
+            expiresAt: expiresAt
+        )
+    }
 }
 
 struct SalesforceQueryResponse<Record: Decodable>: Decodable {
@@ -273,6 +723,17 @@ private struct SalesforceAttributes: Decodable {
     let type: String?
     let url: String?
 }
+
+#if DEBUG
+struct SalesforceFieldDiscoveryResult: Identifiable {
+    let fieldName: String
+    let isAvailable: Bool
+    let sampleValues: [String]
+    let errorMessage: String?
+
+    var id: String { fieldName }
+}
+#endif
 
 private struct SalesforceSiteRecord: Decodable {
     let attributes: SalesforceAttributes?
@@ -290,6 +751,12 @@ private struct SalesforceSiteRecord: Decodable {
     let stateProvince: String?
     let nameplateCapacityKW: Double?
     let uniqueName: String?
+    let description: String?
+    let location: String?
+    let siteName: String?
+    let displayName: String?
+    let accountId: String?
+    let accountName: String?
     let externalAssetId: String?
     let assetUUID: String?
 
@@ -297,6 +764,9 @@ private struct SalesforceSiteRecord: Decodable {
         case attributes
         case id = "Id"
         case name = "Name"
+        case description = "pffsm__Description__c"
+        case location = "pffsm__Location__c"
+        case siteName = "pffsm__Site_Name__c"
         case assetClass = "pffsm__Asset_Class__c"
         case assetSubClass = "pffsm__Asset_SubClass__c"
         case status = "pffsm__Status__c"
@@ -309,20 +779,110 @@ private struct SalesforceSiteRecord: Decodable {
         case stateProvince = "pffsm__State_Province__c"
         case nameplateCapacityKW = "pffsm__Site_Nameplate_Capacity_kW__c"
         case uniqueName = "pffsm__Unique_Name__c"
+        case displayName = "pffsm__Display_Name__c"
+        case accountId = "pffsm__Account__c"
+        case accountRelationship = "pffsm__Account__r"
         case externalAssetId = "pffsm__External_Asset_ID__c"
         case assetUUID = "pffsm__Asset_UUID__c"
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attributes = try container.decodeIfPresent(SalesforceAttributes.self, forKey: .attributes)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        location = try container.decodeIfPresent(String.self, forKey: .location)
+        siteName = try container.decodeIfPresent(String.self, forKey: .siteName)
+        assetClass = try container.decode(String.self, forKey: .assetClass)
+        assetSubClass = try container.decodeIfPresent(String.self, forKey: .assetSubClass)
+        status = try container.decode(String.self, forKey: .status)
+        siteStatus = try container.decodeIfPresent(String.self, forKey: .siteStatus)
+        plant = try container.decodeIfPresent(String.self, forKey: .plant)
+        plantName = try container.decodeIfPresent(String.self, forKey: .plantName)
+        topLevelParent = try container.decodeIfPresent(String.self, forKey: .topLevelParent)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        stateProvince = try container.decodeIfPresent(String.self, forKey: .stateProvince)
+        nameplateCapacityKW = try container.decodeIfPresent(Double.self, forKey: .nameplateCapacityKW)
+        uniqueName = try container.decodeIfPresent(String.self, forKey: .uniqueName)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        accountId = try container.decodeIfPresent(String.self, forKey: .accountId)
+        accountName = try container.decodeIfPresent(SalesforceRelationshipName.self, forKey: .accountRelationship)?.name
+        externalAssetId = try container.decodeIfPresent(String.self, forKey: .externalAssetId)
+        assetUUID = try container.decodeIfPresent(String.self, forKey: .assetUUID)
+    }
+
+    var friendlyName: String? {
+        let trimmedDescription = description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedDescription.isEmpty ? nil : trimmedDescription
+    }
+
     var dto: SiteDTO {
-        SiteDTO(id: id, name: name, assetClass: assetClass, assetSubClass: assetSubClass, status: status, siteStatus: siteStatus, plant: plant, plantName: plantName, topLevelParent: topLevelParent, latitude: latitude, longitude: longitude, stateProvince: stateProvince, nameplateCapacityKW: nameplateCapacityKW, uniqueName: uniqueName, externalAssetId: externalAssetId, assetUUID: assetUUID)
+        SiteDTO(id: id, name: name, friendlyName: friendlyName, assetClass: assetClass, assetSubClass: assetSubClass, status: status, siteStatus: siteStatus, plant: plant, plantName: plantName, topLevelParent: topLevelParent, latitude: latitude, longitude: longitude, stateProvince: stateProvince, nameplateCapacityKW: nameplateCapacityKW, uniqueName: uniqueName, externalAssetId: externalAssetId, assetUUID: assetUUID)
     }
 }
+
+#if DEBUG
+private struct SalesforceSiteFriendlyNameRecord: Decodable {
+    let description: String?
+    let location: String?
+    let siteName: String?
+    let plantName: String?
+    let uniqueName: String?
+    let displayName: String?
+    let accountId: String?
+    let accountName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case description = "pffsm__Description__c"
+        case location = "pffsm__Location__c"
+        case siteName = "pffsm__Site_Name__c"
+        case plantName = "pffsm__PlantName__c"
+        case uniqueName = "pffsm__Unique_Name__c"
+        case displayName = "pffsm__Display_Name__c"
+        case accountId = "pffsm__Account__c"
+        case accountRelationship = "pffsm__Account__r"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        location = try container.decodeIfPresent(String.self, forKey: .location)
+        siteName = try container.decodeIfPresent(String.self, forKey: .siteName)
+        plantName = try container.decodeIfPresent(String.self, forKey: .plantName)
+        uniqueName = try container.decodeIfPresent(String.self, forKey: .uniqueName)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        accountId = try container.decodeIfPresent(String.self, forKey: .accountId)
+        accountName = try container.decodeIfPresent(SalesforceRelationshipName.self, forKey: .accountRelationship)?.name
+    }
+
+    func value(for fieldAPIName: String) -> String? {
+        switch fieldAPIName {
+        case SalesforceSchema.SiteFields.description: description
+        case SalesforceSchema.SiteFields.location: location
+        case SalesforceSchema.SiteFields.siteName: siteName
+        case SalesforceSchema.SiteFields.plantName: plantName
+        case SalesforceSchema.SiteFields.uniqueName: uniqueName
+        case SalesforceSchema.SiteFields.displayName: displayName
+        case SalesforceSchema.SiteFields.accountId: accountId
+        case SalesforceSchema.SiteFields.accountName: accountName
+        default: nil
+        }
+    }
+}
+#endif
 
 private struct SalesforceWorkOrderRecord: Decodable {
     let attributes: SalesforceAttributes?
     let id: String
     let name: String
     let assetId: String
+    let assetName: String?
+    let descriptionText: String?
+    let assetDescription: String?
+    let accountId: String?
+    let accountSR: String?
     let status: String?
     let woStatus: String?
     let woType: String?
@@ -342,7 +902,11 @@ private struct SalesforceWorkOrderRecord: Decodable {
         case attributes
         case id = "Id"
         case name = "Name"
-        case assetId = "pffsm__Asset__c"
+        case descriptionText = "pffsm__Description__c"
+        case assetId = "pffsm__Equipment__c"
+        case equipmentRelationship = "pffsm__Equipment__r"
+        case accountId = "pffsm__Account__c"
+        case accountSR = "Account_SR__c"
         case status = "pffsm__Status__c"
         case woStatus = "pffsm__WO_Status__c"
         case woType = "pffsm__WO_Type__c"
@@ -364,7 +928,14 @@ private struct SalesforceWorkOrderRecord: Decodable {
         attributes = try container.decodeIfPresent(SalesforceAttributes.self, forKey: .attributes)
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        assetId = try container.decode(String.self, forKey: .assetId)
+        descriptionText = try container.decodeIfPresent(String.self, forKey: .descriptionText)
+        let decodedAssetId = try container.decodeIfPresent(String.self, forKey: .assetId)
+        assetName = try container.decodeIfPresent(SalesforceRelationshipName.self, forKey: .equipmentRelationship)?.name
+        assetDescription = try container.decodeIfPresent(SalesforceRelationshipName.self, forKey: .equipmentRelationship)?.description
+        accountId = try container.decodeIfPresent(String.self, forKey: .accountId)
+        accountSR = try container.decodeIfPresent(String.self, forKey: .accountSR)
+        // TODO: Temporary for DEBUG Account query testing. assetId should only represent pffsm__Equipment__c/site equipment once the correct Work Order-to-site relationship is confirmed.
+        assetId = decodedAssetId ?? accountId ?? ""
         status = try container.decodeIfPresent(String.self, forKey: .status)
         woStatus = try container.decodeIfPresent(String.self, forKey: .woStatus)
         woType = try container.decodeIfPresent(String.self, forKey: .woType)
@@ -382,7 +953,17 @@ private struct SalesforceWorkOrderRecord: Decodable {
     }
 
     var dto: WorkOrderDTO {
-        WorkOrderDTO(id: id, name: name, assetId: assetId, status: status, woStatus: woStatus, woType: woType, priority: priority, scheduledStartDate: scheduledStartDate, scheduledDateTime: scheduledDateTime, scheduledOnsiteDate: scheduledOnsiteDate, scheduledCompletionDate: scheduledCompletionDate, siteName: siteName, siteType: siteType, siteAccess: siteAccess, siteInstructions: siteInstructions, workOrder18: workOrder18, recordTypeId: recordTypeId)
+        WorkOrderDTO(id: id, name: name, assetId: assetId, assetName: assetName, descriptionText: descriptionText, assetDescription: assetDescription, accountId: accountId, accountSR: accountSR, status: status, woStatus: woStatus, woType: woType, priority: priority, scheduledStartDate: scheduledStartDate, scheduledDateTime: scheduledDateTime, scheduledOnsiteDate: scheduledOnsiteDate, scheduledCompletionDate: scheduledCompletionDate, siteName: siteName, siteType: siteType, siteAccess: siteAccess, siteInstructions: siteInstructions, workOrder18: workOrder18, recordTypeId: recordTypeId)
+    }
+}
+
+private struct SalesforceRelationshipName: Decodable {
+    let name: String?
+    let description: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case description = "pffsm__Description__c"
     }
 }
 
@@ -412,9 +993,7 @@ private struct SalesforceWorkTaskRecord: Decodable {
         case id = "Id"
         case name = "Name"
         case workOrderId = "pffsm__Work_Order__c"
-        case assetId = "pffsm__Asset__c"
         case step = "pffsm__Step__c"
-        case descriptionText = "pffsm__Description__c"
         case status = "pffsm__Status__c"
         case scheduleDate = "pffsm__Schedule_Date__c"
         case taskDueDate = "pffsm__Task_Due_Date__c"
@@ -435,21 +1014,21 @@ private struct SalesforceWorkTaskRecord: Decodable {
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         workOrderId = try container.decode(String.self, forKey: .workOrderId)
-        assetId = try container.decodeIfPresent(String.self, forKey: .assetId)
-        step = try container.decodeIfPresent(Double.self, forKey: .step)
-        descriptionText = try container.decodeIfPresent(String.self, forKey: .descriptionText)
-        status = try container.decodeIfPresent(String.self, forKey: .status)
-        scheduleDate = try container.decodeSalesforceDate(forKey: .scheduleDate)
-        taskDueDate = try container.decodeSalesforceDate(forKey: .taskDueDate)
-        standardFormTemplateId = try container.decodeIfPresent(String.self, forKey: .standardFormTemplateId)
-        stdTaskId = try container.decodeIfPresent(String.self, forKey: .stdTaskId)
-        totalSteps = try container.decodeFlexibleInt(forKey: .totalSteps)
-        taskStepsCompleted = try container.decodeFlexibleInt(forKey: .taskStepsCompleted)
-        wtType = try container.decodeIfPresent(String.self, forKey: .wtType)
-        priority = try container.decodeIfPresent(String.self, forKey: .priority)
-        instructionsRT = try container.decodeIfPresent(String.self, forKey: .instructionsRT)
-        formValuesJSON = try container.decodeIfPresent(String.self, forKey: .formValuesJSON)
-        inspectionFormCompleted = try container.decodeIfPresent(Bool.self, forKey: .inspectionFormCompleted)
+        assetId = nil
+        step = nil
+        descriptionText = nil
+        status = nil
+        scheduleDate = nil
+        taskDueDate = nil
+        standardFormTemplateId = nil
+        stdTaskId = nil
+        totalSteps = nil
+        taskStepsCompleted = nil
+        wtType = nil
+        priority = nil
+        instructionsRT = nil
+        formValuesJSON = nil
+        inspectionFormCompleted = nil
     }
 
     var dto: WorkTaskDTO {
@@ -576,11 +1155,16 @@ private extension DateFormatter {
 enum SalesforceAPIError: LocalizedError {
     case notAuthenticated
     case sessionNotConfigured
+    case loginRequired
     case notConfigured
+    case oauthNotConfigured
+    case invalidOAuthCallback
+    case oauthFailed(String)
     case invalidURL
     case invalidResponse
     case requestFailed(statusCode: Int, body: String)
     case decodingFailed(String)
+    case keychainFailure(OSStatus)
     case mockFetchFailure
     case mockSyncFailure
 
@@ -588,11 +1172,16 @@ enum SalesforceAPIError: LocalizedError {
         switch self {
         case .notAuthenticated: "Salesforce session is not authenticated."
         case .sessionNotConfigured: "Salesforce session is not configured."
+        case .loginRequired: "Salesforce login is required."
         case .notConfigured: "Real Salesforce integration is not configured yet. Use MockSalesforceAPIClient for local app runs."
+        case .oauthNotConfigured: "Salesforce OAuth is not configured. Set the Connected App client ID and redirect URI first."
+        case .invalidOAuthCallback: "Salesforce login returned an invalid callback."
+        case let .oauthFailed(message): "Salesforce login failed. \(message)"
         case .invalidURL: "Could not build Salesforce REST URL."
         case .invalidResponse: "Salesforce returned an invalid response."
         case let .requestFailed(statusCode, body): "Salesforce request failed with HTTP \(statusCode). \(body)"
         case let .decodingFailed(message): "Could not decode Salesforce response. \(message)"
+        case let .keychainFailure(status): "Could not access stored Salesforce tokens. Keychain status: \(status)."
         case .mockFetchFailure: "Mock fetch failure. Disable simulateFetchFailure and try again."
         case .mockSyncFailure: "Mock sync failure. Remove 'simulate sync failure' from comments and retry."
         }

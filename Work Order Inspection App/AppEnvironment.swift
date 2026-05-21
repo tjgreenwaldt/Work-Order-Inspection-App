@@ -7,10 +7,19 @@ struct WorkOrderSyncMessage: Equatable {
     let detail: String?
 }
 
+#if DEBUG
+enum AppBackendSelection: String, CaseIterable, Identifiable {
+    case mock = "Mock Salesforce"
+    case realManual = "Real Salesforce - Manual Session"
+    case realOAuth = "Real Salesforce - OAuth"
+
+    var id: String { rawValue }
+}
+#endif
+
 @MainActor
 final class AppEnvironment: ObservableObject {
-    let apiClient: SalesforceAPIClient
-    let authService: SalesforceAuthService
+    @Published private(set) var apiClient: SalesforceAPIClient
 
     @Published var session: SalesforceSession?
     @Published var isAuthenticating = false
@@ -19,26 +28,116 @@ final class AppEnvironment: ObservableObject {
     @Published var lastSuccessfulSync: Date?
     @Published var lastSyncError: String?
     @Published private var workOrderSyncMessages: [String: WorkOrderSyncMessage] = [:]
+    #if DEBUG
+    @Published var selectedBackend: AppBackendSelection
+    @Published var manualInstanceURLText = "https://pfdrive-origis.my.salesforce.com"
+    @Published var manualAccessToken = ""
+    #endif
 
     var isAuthenticated: Bool { session != nil }
+    var isUsingMockClient: Bool {
+        apiClient is MockSalesforceAPIClient
+    }
+
     var backendTypeName: String {
         apiClient is MockSalesforceAPIClient ? "Mock" : "Real Salesforce"
     }
 
     init(apiClient: SalesforceAPIClient) {
         self.apiClient = apiClient
-        self.authService = SalesforceAuthService(apiClient: apiClient)
+        #if DEBUG
+        self.selectedBackend = apiClient is MockSalesforceAPIClient ? .mock : .realOAuth
+        #endif
     }
+
+    private var authService: SalesforceAuthService {
+        SalesforceAuthService(apiClient: apiClient)
+    }
+
+    #if DEBUG
+    func selectBackend(_ backend: AppBackendSelection) {
+        guard backend != selectedBackend else { return }
+        selectedBackend = backend
+        rebuildAPIClientForSelectedBackend()
+        session = nil
+        selectedSite = nil
+        authError = backend == .mock ? nil : "Salesforce login required."
+    }
+
+    func updateManualSession(instanceURLText: String? = nil, accessToken: String? = nil) {
+        if let instanceURLText {
+            manualInstanceURLText = instanceURLText
+        }
+        if let accessToken {
+            manualAccessToken = accessToken
+        }
+        guard selectedBackend == .realManual else { return }
+        rebuildAPIClientForSelectedBackend()
+        session = manualSession()
+        authError = session == nil ? "Salesforce session is not configured." : nil
+    }
+
+    func clearManualSession() {
+        manualInstanceURLText = "https://pfdrive-origis.my.salesforce.com"
+        manualAccessToken = ""
+        if selectedBackend == .realManual {
+            rebuildAPIClientForSelectedBackend()
+            session = nil
+            authError = "Salesforce session is not configured."
+        }
+    }
+
+    private func rebuildAPIClientForSelectedBackend() {
+        switch selectedBackend {
+        case .mock:
+            apiClient = MockSalesforceAPIClient()
+        case .realManual:
+            let session = manualSession()
+            apiClient = RealSalesforceAPIClient(config: .current, session: session, tokenStore: EphemeralSalesforceTokenStore())
+        case .realOAuth:
+            apiClient = RealSalesforceAPIClient(config: .current)
+        }
+    }
+
+    private func manualSession() -> SalesforceSession? {
+        let trimmedURL = manualInstanceURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = manualAccessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let instanceURL = URL(string: trimmedURL), trimmedToken.isEmpty == false else {
+            return nil
+        }
+        return SalesforceSession(accessToken: trimmedToken, refreshToken: nil, instanceURL: instanceURL, issuedAt: Date(), expiresAt: nil)
+    }
+    #endif
 
     func mockLogin() async {
         isAuthenticating = true
+        defer { isAuthenticating = false }
         authError = nil
         do {
+            #if DEBUG
+            if selectedBackend == .realManual {
+                guard let manualSession = manualSession() else {
+                    throw SalesforceAPIError.sessionNotConfigured
+                }
+                rebuildAPIClientForSelectedBackend()
+                session = manualSession
+                return
+            }
+            #endif
             session = try await authService.mockLogin()
         } catch {
             authError = error.localizedDescription
         }
-        isAuthenticating = false
+    }
+
+    func logout() async {
+        do {
+            try await authService.logout()
+        } catch {
+            authError = error.localizedDescription
+        }
+        session = nil
+        selectedSite = nil
     }
 
     func selectSite(_ site: SiteDTO) {
@@ -86,12 +185,10 @@ struct SalesforceAuthService {
     }
 
     func beginOAuthLogin() async throws -> SalesforceSession {
-        // TODO: Build OAuth 2.0 Authorization Code with PKCE flow.
-        // TODO: Connected App client ID.
-        // TODO: Redirect URI registered in Salesforce.
-        // TODO: Login domain, such as login.salesforce.com or a My Domain host.
-        // TODO: OAuth scopes, including API and refresh token scopes as appropriate.
-        // TODO: Token refresh and secure keychain persistence.
         try await apiClient.authenticate()
+    }
+
+    func logout() async throws {
+        try await apiClient.logout()
     }
 }

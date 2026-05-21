@@ -13,15 +13,17 @@ struct SalesforceConfig {
     let redirectURI: String
     let environment: SalesforceEnvironment
     let useMockClient: Bool
+    let oauthScopes: [String]
 
     static let current = SalesforceConfig(
         apiVersion: SalesforceSchema.apiVersion,
         loginBaseURL: URL(string: "https://test.salesforce.com")!,
         instanceBaseURL: nil,
         connectedAppClientId: "TODO_CONNECTED_APP_CLIENT_ID",
-        redirectURI: "TODO_REDIRECT_URI",
+        redirectURI: "work-order-inspection-app://oauth/callback",
         environment: .sandbox,
-        useMockClient: true
+        useMockClient: true,
+        oauthScopes: ["api", "refresh_token", "openid", "profile"]
     )
 
     var isConfiguredForReadOnlyAPI: Bool {
@@ -34,5 +36,9 @@ struct SalesforceConfig {
         }
 
         return RealSalesforceAPIClient(config: self, session: session)
+    }
+
+    var callbackURLScheme: String {
+        URLComponents(string: redirectURI)?.scheme ?? redirectURI
     }
 }

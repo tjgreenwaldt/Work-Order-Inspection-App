@@ -3,25 +3,7 @@ import Foundation
 enum SalesforceRichTextFormatter {
     static func htmlToAttributedString(_ html: String) -> AttributedString? {
         let cleanedText = htmlToPlainText(html)
-        guard cleanedText.isEmpty == false else { return nil }
-        guard containsHTML(html), let data = html.data(using: .utf8) else {
-            return AttributedString(cleanedText)
-        }
-
-        do {
-            let nsAttributedString = try NSAttributedString(
-                data: data,
-                options: [
-                    .documentType: NSAttributedString.DocumentType.html,
-                    .characterEncoding: String.Encoding.utf8.rawValue
-                ],
-                documentAttributes: nil
-            )
-            let attributedString = AttributedString(nsAttributedString)
-            return attributedString.characters.isEmpty ? AttributedString(cleanedText) : attributedString
-        } catch {
-            return AttributedString(cleanedText)
-        }
+        return cleanedText.isEmpty ? nil : AttributedString(cleanedText)
     }
 
     static func htmlToPlainText(_ html: String) -> String {
@@ -31,21 +13,8 @@ enum SalesforceRichTextFormatter {
             .replacingOccurrences(of: #"(?i)</p\s*>"#, with: "\n", options: .regularExpression)
             .replacingOccurrences(of: #"(?i)<p[^>]*>"#, with: "", options: .regularExpression)
 
-        let decodedText: String
-        if containsHTML(normalizedHTML), let data = normalizedHTML.data(using: .utf8),
-           let attributedString = try? NSAttributedString(
-            data: data,
-            options: [
-                .documentType: NSAttributedString.DocumentType.html,
-                .characterEncoding: String.Encoding.utf8.rawValue
-            ],
-            documentAttributes: nil
-           ) {
-            decodedText = attributedString.string
-        } else {
-            decodedText = decodeHTMLEntities(in: normalizedHTML)
-                .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-        }
+        let decodedText = decodeHTMLEntities(in: normalizedHTML)
+            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
 
         return normalizeDisplayWhitespace(decodedText)
     }
@@ -60,18 +29,33 @@ enum SalesforceRichTextFormatter {
     }
 
     private static func decodeHTMLEntities(in value: String) -> String {
-        guard let data = value.data(using: .utf8),
-              let decoded = try? NSAttributedString(
-                data: data,
-                options: [
-                    .documentType: NSAttributedString.DocumentType.html,
-                    .characterEncoding: String.Encoding.utf8.rawValue
-                ],
-                documentAttributes: nil
-              ).string else {
-            return value
+        var result = value
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
+
+        let numericEntityPattern = #"&#(x?[0-9A-Fa-f]+);"#
+        let matches = result.matches(of: try! Regex(numericEntityPattern))
+        for match in matches.reversed() {
+            let entity = String(match.0)
+            let scalarText = entity
+                .dropFirst(2)
+                .dropLast()
+            let value: UInt32?
+            if scalarText.lowercased().hasPrefix("x") {
+                value = UInt32(scalarText.dropFirst(), radix: 16)
+            } else {
+                value = UInt32(scalarText, radix: 10)
+            }
+            if let value, let scalar = UnicodeScalar(value) {
+                result.replaceSubrange(match.range, with: String(Character(scalar)))
+            }
         }
-        return decoded
+        return result
     }
 
     private static func normalizeDisplayWhitespace(_ value: String) -> String {
