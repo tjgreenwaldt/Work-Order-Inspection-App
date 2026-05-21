@@ -29,22 +29,9 @@
 		C85F29CC2FBE00DF003DF5D6 /* Work Order Inspection AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Work Order Inspection AppUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		C8302BAC2FBE88E900FD6AD6 /* Exceptions for "Work Order Inspection App" folder in "Work Order Inspection App" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"Work-Order-Inspection-App-Info.plist",
-			);
-			target = C85F29B22FBE00DE003DF5D6 /* Work Order Inspection App */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		C85F29B52FBE00DE003DF5D6 /* Work Order Inspection App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				C8302BAC2FBE88E900FD6AD6 /* Exceptions for "Work Order Inspection App" folder in "Work Order Inspection App" target */,
-			);
 			path = "Work Order Inspection App";
 			sourceTree = "<group>";
 		};
