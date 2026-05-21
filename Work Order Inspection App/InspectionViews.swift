@@ -11,6 +11,23 @@ struct LoginView: View {
                 .font(.largeTitle.bold())
             Text("Sign in to Salesforce, select a plant, and complete today’s Work Task Step inspections.")
                 .foregroundStyle(.secondary)
+            #if DEBUG
+            Picker("Backend", selection: Binding(
+                get: { appEnvironment.selectedBackend },
+                set: { appEnvironment.selectBackend($0) }
+            )) {
+                ForEach(AppBackendSelection.allCases) { backend in
+                    Text(backend.rawValue).tag(backend)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("Current backend: \(appEnvironment.selectedBackend.rawValue)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if appEnvironment.selectedBackend == .realManual {
+                ManualSalesforceSessionFields()
+            }
+            #endif
             if let authError = appEnvironment.authError {
                 Text(authError)
                     .foregroundStyle(.red)
@@ -21,13 +38,22 @@ struct LoginView: View {
                 if appEnvironment.isAuthenticating {
                     ProgressView().frame(maxWidth: .infinity)
                 } else {
-                    Label("Mock Salesforce Login", systemImage: "person.badge.key")
+                    Label(appEnvironment.isUsingMockClient ? "Mock Salesforce Login" : "Log In with Salesforce", systemImage: "person.badge.key")
                         .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(appEnvironment.isAuthenticating)
+            #if DEBUG
+            NavigationLink {
+                SalesforceDeveloperTestView()
+            } label: {
+                Label("Developer Salesforce Test", systemImage: "wrench.and.screwdriver")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            #endif
             Spacer()
         }
         .padding()
@@ -48,6 +74,8 @@ struct SiteSelectionView: View {
         guard searchText.isEmpty == false else { return sites }
         return sites.filter { site in
             site.name.localizedCaseInsensitiveContains(searchText) ||
+            site.displayName.localizedCaseInsensitiveContains(searchText) ||
+            site.pfIdPrefix.localizedCaseInsensitiveContains(searchText) ||
             (site.uniqueName ?? "").localizedCaseInsensitiveContains(searchText) ||
             (site.stateProvince ?? "").localizedCaseInsensitiveContains(searchText)
         }
@@ -55,14 +83,51 @@ struct SiteSelectionView: View {
 
     var body: some View {
         List {
+            #if DEBUG
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Current backend: \(appEnvironment.selectedBackend.rawValue)")
+                        .font(.headline)
+                    Picker("Backend", selection: Binding(
+                        get: { appEnvironment.selectedBackend },
+                        set: { appEnvironment.selectBackend($0) }
+                    )) {
+                        ForEach(AppBackendSelection.allCases) { backend in
+                            Text(backend.rawValue).tag(backend)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if appEnvironment.selectedBackend == .realManual {
+                    ManualSalesforceSessionFields()
+                }
+                if appEnvironment.selectedBackend != .mock && appEnvironment.isAuthenticated == false {
+                    Text("Salesforce login required.")
+                        .foregroundStyle(.secondary)
+                    Button(appEnvironment.selectedBackend == .realManual ? "Use Manual Session" : "Log In with Salesforce") {
+                        Task { await appEnvironment.mockLogin() }
+                    }
+                    .disabled(appEnvironment.isAuthenticating)
+                }
+            }
+            #endif
             SyncSummaryRow()
+            #if DEBUG
+            Section {
+                NavigationLink {
+                    SalesforceDeveloperTestView()
+                } label: {
+                    Label("Developer Salesforce Test", systemImage: "wrench.and.screwdriver")
+                }
+            }
+            #endif
 
             if isLoading {
                 ProgressView("Loading plants...")
             } else if let errorMessage {
                 ContentUnavailableView("Could not load plants", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
             } else if filteredSites.isEmpty {
-                ContentUnavailableView("No in-service plants", systemImage: "building.2")
+                ContentUnavailableView("No plants found", systemImage: "building.2", description: Text("No in-service plant records are available for this Salesforce session."))
             } else {
                 ForEach(filteredSites) { site in
                     NavigationLink {
@@ -73,10 +138,16 @@ struct SiteSelectionView: View {
                             }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(site.name).font(.headline)
-                            Text([site.assetSubClass, site.stateProvince, site.uniqueName].compactMap { $0 }.joined(separator: " • "))
+                            Text(site.displayName).font(.headline)
+                            Text(site.pfIdPrefix)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                            let details = [site.assetSubClass, site.stateProvince, site.uniqueName].compactMap { $0 }.joined(separator: " • ")
+                            if details.isEmpty == false {
+                                Text(details)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -88,6 +159,9 @@ struct SiteSelectionView: View {
         .toolbar {
             Button { Task { await loadSites() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 .disabled(isLoading)
+            Button("Logout") {
+                Task { await appEnvironment.logout() }
+            }
         }
         .task { await loadSites() }
     }
@@ -104,6 +178,40 @@ struct SiteSelectionView: View {
     }
 }
 
+#if DEBUG
+private struct ManualSalesforceSessionFields: View {
+    @EnvironmentObject private var appEnvironment: AppEnvironment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Salesforce Instance URL", text: Binding(
+                get: { appEnvironment.manualInstanceURLText },
+                set: { appEnvironment.updateManualSession(instanceURLText: $0) }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+
+            SecureField("Salesforce Access Token", text: Binding(
+                get: { appEnvironment.manualAccessToken },
+                set: { appEnvironment.updateManualSession(accessToken: $0) }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+
+            Button("Clear Manual Session") {
+                appEnvironment.clearManualSession()
+            }
+            .buttonStyle(.bordered)
+
+            Text("DEBUG only. The token is kept in memory and is not written to SwiftData or source code.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+#endif
+
 struct WorkOrdersTodayView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var appEnvironment: AppEnvironment
@@ -113,17 +221,32 @@ struct WorkOrdersTodayView: View {
     @State private var workOrders: [WorkOrderEntity] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    #if DEBUG
+    @State private var workOrderDiagnostics: String?
+    #endif
 
     var body: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(site.name).font(.headline)
+                    Text(site.displayName).font(.headline)
+                    Text(site.pfIdPrefix)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     Text(Date.now, format: .dateTime.weekday(.wide).month().day().year())
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
             }
+            #if DEBUG
+            Section("Read Diagnostics") {
+                LabeledContent("Backend", value: appEnvironment.selectedBackend.rawValue)
+                LabeledContent("Site Name", value: site.name)
+                LabeledContent("Friendly Name", value: site.displayName)
+                LabeledContent("PF Prefix", value: site.pfIdPrefix)
+                LabeledContent("Work Orders", value: "\(workOrders.count)")
+            }
+            #endif
 
             Section("Work Orders Scheduled Today") {
                 if isLoading {
@@ -131,7 +254,15 @@ struct WorkOrdersTodayView: View {
                 } else if let errorMessage {
                     ContentUnavailableView("Could not load work orders", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
                 } else if workOrders.isEmpty {
-                    ContentUnavailableView("No work orders today", systemImage: "calendar.badge.checkmark")
+                    ContentUnavailableView("No work orders scheduled for this site today.", systemImage: "calendar.badge.checkmark")
+                    #if DEBUG
+                    if let workOrderDiagnostics {
+                        Text(workOrderDiagnostics)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    #endif
                 } else {
                     ForEach(workOrders) { workOrder in
                         NavigationLink {
@@ -156,8 +287,18 @@ struct WorkOrdersTodayView: View {
     private func loadWorkOrders() async {
         isLoading = true
         errorMessage = nil
+        #if DEBUG
+        workOrderDiagnostics = nil
+        #endif
         do {
-            workOrders = try await WorkOrderService(apiClient: appEnvironment.apiClient, repository: WorkOrderRepository(modelContext: modelContext)).fetchTodaysWorkOrders(siteId: site.id)
+            let service = WorkOrderService(apiClient: appEnvironment.apiClient, repository: WorkOrderRepository(modelContext: modelContext))
+            #if DEBUG
+            let result = try await service.fetchTodaysWorkOrdersWithDiagnostics(site: site)
+            workOrders = result.workOrders
+            workOrderDiagnostics = result.diagnostics
+            #else
+            workOrders = try await service.fetchTodaysWorkOrders(site: site)
+            #endif
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -181,6 +322,15 @@ private struct WorkOrderCard: View {
                         .background(.thinMaterial, in: Capsule())
                 }
             }
+            if let description = workOrder.descriptionText, description.isEmpty == false {
+                SalesforceRichTextDisplay(description)
+                    .font(.subheadline)
+            }
+            if let assetDescription = workOrder.assetDescription, assetDescription.isEmpty == false {
+                SalesforceRichTextDisplay(assetDescription)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             Text(workOrder.woType ?? "Work Order")
             Text([workOrder.woStatus, workOrder.siteAccess].compactMap { $0 }.joined(separator: " • "))
                 .font(.caption)
@@ -202,6 +352,8 @@ struct WorkOrderDetailView: View {
     @State private var errorMessage: String?
     @State private var didLoadInspection = false
     @State private var shouldOpenInspection = false
+    @State private var stepCount = 0
+    @State private var isRetryingSync = false
 
     var body: some View {
         List {
@@ -210,6 +362,15 @@ struct WorkOrderDetailView: View {
                 LabeledContent("Status", value: workOrder.woStatus ?? workOrder.status ?? "-")
                 LabeledContent("Type", value: workOrder.woType ?? "-")
                 LabeledContent("Priority", value: workOrder.priority ?? "-")
+                if let description = workOrder.descriptionText, description.isEmpty == false {
+                    SalesforceRichTextDisplay(description).foregroundStyle(.secondary)
+                }
+                if let assetDescription = workOrder.assetDescription, assetDescription.isEmpty == false {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Equipment").font(.caption).foregroundStyle(.secondary)
+                        SalesforceRichTextDisplay(assetDescription)
+                    }
+                }
                 if let siteInstructions = workOrder.siteInstructions, siteInstructions.isEmpty == false {
                     Text(siteInstructions).foregroundStyle(.secondary)
                 }
@@ -231,11 +392,33 @@ struct WorkOrderDetailView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                Button {
+                    Task { await retrySync() }
+                } label: {
+                    if isRetryingSync {
+                        ProgressView()
+                    } else {
+                        Label("Retry Sync", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                }
+                .disabled(isRetryingSync)
                 if taskCount > 0 {
                     LabeledContent("Work Tasks", value: "\(taskCount)")
                 }
+                #if DEBUG
+                LabeledContent("Backend", value: appEnvironment.selectedBackend.rawValue)
+                LabeledContent("Site", value: site.displayName)
+                LabeledContent("Site Name", value: site.name)
+                LabeledContent("PF Prefix", value: site.pfIdPrefix)
+                LabeledContent("Task Count", value: "\(taskCount)")
+                LabeledContent("Step Count", value: "\(stepCount)")
+                #endif
                 if didLoadInspection && taskCount == 0 {
-                    Text("No work tasks were found for this work order.")
+                    Text("No work tasks found for this work order.")
+                        .foregroundStyle(.secondary)
+                }
+                if didLoadInspection && taskCount > 0 && stepCount == 0 {
+                    Text("No work task steps found for this work order.")
                         .foregroundStyle(.secondary)
                 }
                 Button {
@@ -280,12 +463,33 @@ struct WorkOrderDetailView: View {
         do {
             let result = try await service().loadInspection(workOrderId: workOrder.id)
             taskCount = result.tasks.count
+            stepCount = result.steps.count
             didLoadInspection = true
             shouldOpenInspection = result.tasks.isEmpty == false
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    private func retrySync() async {
+        isRetryingSync = true
+        errorMessage = nil
+        let syncService = InspectionSyncService(
+            apiClient: appEnvironment.apiClient,
+            draftRepository: LocalStepDraftRepository(modelContext: modelContext)
+        )
+        do {
+            _ = try await syncService.syncPendingStepUpdates()
+            appEnvironment.recordWorkOrderSyncSuccess(workOrderId: workOrder.id)
+        } catch {
+            appEnvironment.recordWorkOrderSyncFailure(
+                workOrderId: workOrder.id,
+                error: error,
+                isConnectivityError: InspectionSyncService.isConnectivityError(error)
+            )
+        }
+        isRetryingSync = false
     }
 }
 
@@ -305,6 +509,10 @@ struct InspectionFormView: View {
     @State private var isSyncing = false
     @State private var bannerMessage: String?
     @State private var errorMessage: String?
+    #if DEBUG
+    @State private var showRealWritebackConfirmation = false
+    @State private var hasConfirmedRealWriteback = false
+    #endif
 
     var body: some View {
         List {
@@ -313,10 +521,17 @@ struct InspectionFormView: View {
             } else if let errorMessage {
                 ContentUnavailableView("Could not load inspection", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
             } else if tasks.isEmpty {
-                ContentUnavailableView("No work tasks", systemImage: "checklist", description: Text("This work order has no local work tasks. Return to the work order and start inspection again."))
+                ContentUnavailableView("No work tasks", systemImage: "checklist", description: Text("No work tasks were found for this work order."))
             } else if steps.isEmpty {
-                ContentUnavailableView("No task steps", systemImage: "list.bullet.rectangle", description: Text("No Work Task Steps were found for the downloaded tasks."))
+                ContentUnavailableView("No work task steps", systemImage: "list.bullet.rectangle", description: Text("No Work Task Steps were found for this work order."))
             } else {
+                #if DEBUG
+                Section("Read Diagnostics") {
+                    LabeledContent("Backend", value: appEnvironment.selectedBackend.rawValue)
+                    LabeledContent("Work Tasks", value: "\(tasks.count)")
+                    LabeledContent("Work Task Steps", value: "\(steps.count)")
+                }
+                #endif
                 ForEach(tasks) { task in
                     TaskSectionView(
                         task: task,
@@ -338,7 +553,15 @@ struct InspectionFormView: View {
                     Button("Save Draft") { saveDraft() }
                         .buttonStyle(.bordered)
                     Button {
+                        #if DEBUG
+                        if appEnvironment.apiClient is RealSalesforceAPIClient && hasConfirmedRealWriteback == false {
+                            showRealWritebackConfirmation = true
+                        } else {
+                            Task { await submit() }
+                        }
+                        #else
                         Task { await submit() }
+                        #endif
                     } label: {
                         if isSyncing {
                             ProgressView().frame(maxWidth: .infinity)
@@ -354,6 +577,17 @@ struct InspectionFormView: View {
             .background(.bar)
         }
         .task { await loadLocalInspection() }
+        #if DEBUG
+        .alert("This will update Salesforce Work Task Steps. Continue?", isPresented: $showRealWritebackConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Continue") {
+                hasConfirmedRealWriteback = true
+                Task { await submit() }
+            }
+        } message: {
+            Text("Only pffsm__Work_Task_Step__c records will be updated.")
+        }
+        #endif
     }
 
     private func formService() -> InspectionFormService {
@@ -399,6 +633,7 @@ struct InspectionFormView: View {
             }
             let draftRepository = LocalStepDraftRepository(modelContext: modelContext)
             let syncService = InspectionSyncService(apiClient: appEnvironment.apiClient, draftRepository: draftRepository)
+            // Submit is local-first: mark changed drafts pending, close the form, then upload in the background.
             try syncService.markWorkOrderPendingUpload(workOrder.id)
             dismiss()
             Task {
@@ -458,11 +693,34 @@ struct TaskSectionView: View {
         } header: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.name)
-                if let description = task.descriptionText, description.isEmpty == false {
-                    Text(description).font(.caption).textCase(nil)
+                if SalesforceRichTextFormatter.displayText(from: task.descriptionText).isEmpty == false {
+                    SalesforceRichTextDisplay(task.descriptionText)
+                        .font(.caption)
+                        .textCase(nil)
+                }
+                if SalesforceRichTextFormatter.displayText(from: task.instructionsRT).isEmpty == false {
+                    SalesforceRichTextDisplay(task.instructionsRT)
+                        .font(.caption)
+                        .textCase(nil)
                 }
             }
         }
+    }
+}
+
+private struct SalesforceRichTextDisplay: View {
+    private let rawText: String?
+    private let fallback: String
+
+    init(_ rawText: String?, fallback: String = "") {
+        self.rawText = rawText
+        self.fallback = fallback
+    }
+
+    var body: some View {
+        let displayText = SalesforceRichTextFormatter.displayText(from: rawText)
+        let finalText = displayText.isEmpty ? fallback : displayText
+        Text(finalText)
     }
 }
 
@@ -477,7 +735,7 @@ struct StepResponseView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(step.name).font(.headline)
-                    Text(step.additionalDetails ?? step.recommendedAction ?? "No additional details.")
+                    SalesforceRichTextDisplay(step.additionalDetails ?? step.recommendedAction, fallback: "No additional details.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -657,3 +915,304 @@ struct SyncStatusView: View {
         isSyncing = false
     }
 }
+
+#if DEBUG
+private enum DeveloperSalesforceBackend: String, CaseIterable, Identifiable {
+    case mock = "Mock Salesforce"
+    case manual = "Real Salesforce Manual Session"
+    case oauth = "Real Salesforce OAuth"
+
+    var id: String { rawValue }
+}
+
+struct SalesforceDeveloperTestView: View {
+    @State private var backend: DeveloperSalesforceBackend = .mock
+    @State private var instanceURLText = "https://pfdrive-origis.my.salesforce.com"
+    @State private var accessToken = ""
+    @State private var selectedSiteId = ""
+    @State private var selectedWorkOrderId = ""
+    @State private var sites: [SiteDTO] = []
+    @State private var workOrders: [WorkOrderDTO] = []
+    @State private var tasks: [WorkTaskDTO] = []
+    @State private var steps: [WorkTaskStepDTO] = []
+    @State private var resultMessage = "No test has run yet."
+    @State private var isTesting = false
+
+    var body: some View {
+        Form {
+            Section("Backend") {
+                Picker("Backend", selection: $backend) {
+                    ForEach(DeveloperSalesforceBackend.allCases) { backend in
+                        Text(backend.rawValue).tag(backend)
+                    }
+                }
+
+                if backend == .manual {
+                    TextField("Salesforce Instance URL", text: $instanceURLText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    SecureField("Salesforce Access Token", text: $accessToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("DEBUG only. Token is kept in memory for this screen and is not written to SwiftData or source control.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Site Query") {
+                Button("Test Site Query") {
+                    Task { await testSites() }
+                }
+                .disabled(isTesting)
+
+                if sites.isEmpty == false {
+                    Picker("Returned Site", selection: $selectedSiteId) {
+                        Text("Select").tag("")
+                        ForEach(sites) { site in
+                            Text("\(site.displayName) - \(site.pfIdPrefix)").tag(site.id)
+                        }
+                    }
+                }
+            }
+
+            Section("Work Orders") {
+                if let selectedSite = selectedSiteForPrefix {
+                    let prefix = SitePFIDPrefix.derive(from: selectedSite.name)
+                    LabeledContent("Selected Site", value: selectedSite.displayName)
+                    LabeledContent("Equipment Name", value: selectedSite.name)
+                    LabeledContent("PF ID Prefix", value: prefix.value)
+                    if prefix.isReliable == false {
+                        Text("Prefix fallback is less reliable for this site name.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button("Test Work Orders by Equipment Name Prefix") {
+                    Task { await testWorkOrdersByEquipmentNamePrefix(last30Days: false) }
+                }
+                .disabled(isTesting || selectedSiteForPrefix == nil)
+
+                Button("Test Work Orders by Equipment Name Prefix - Last 30 Days") {
+                    Task { await testWorkOrdersByEquipmentNamePrefix(last30Days: true) }
+                }
+                .disabled(isTesting || selectedSiteForPrefix == nil)
+
+                if workOrders.isEmpty == false {
+                    Picker("Returned Work Order", selection: $selectedWorkOrderId) {
+                        Text("Select").tag("")
+                        ForEach(workOrders) { workOrder in
+                            Text(workOrder.name).tag(workOrder.id)
+                        }
+                    }
+                }
+            }
+
+            Section("Tasks and Steps") {
+                Button("Test Work Tasks Query") {
+                    Task { await testTasks() }
+                }
+                .disabled(isTesting || selectedWorkOrderId.isEmpty)
+
+                Button("Test Work Task Steps Query") {
+                    Task { await testSteps() }
+                }
+                .disabled(isTesting || tasks.isEmpty)
+            }
+
+            Section("Manual Session") {
+                Button("Clear Manual Session") {
+                    instanceURLText = "https://pfdrive-origis.my.salesforce.com"
+                    accessToken = ""
+                    sites = []
+                    workOrders = []
+                    tasks = []
+                    steps = []
+                    selectedSiteId = ""
+                    selectedWorkOrderId = ""
+                    resultMessage = "Manual session cleared."
+                }
+                .disabled(isTesting)
+            }
+
+            Section("Result") {
+                if isTesting {
+                    ProgressView("Running test...")
+                }
+                Text(resultMessage)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+            }
+        }
+        .navigationTitle("Salesforce Test")
+    }
+
+    private var selectedSiteForPrefix: SiteDTO? {
+        sites.first { $0.id == selectedSiteId }
+    }
+
+    private func makeClient() async throws -> SalesforceAPIClient {
+        switch backend {
+        case .mock:
+            return MockSalesforceAPIClient()
+        case .manual:
+            guard let instanceURL = URL(string: instanceURLText.trimmingCharacters(in: .whitespacesAndNewlines)), accessToken.isEmpty == false else {
+                throw SalesforceAPIError.sessionNotConfigured
+            }
+            let session = SalesforceSession(accessToken: accessToken, refreshToken: nil, instanceURL: instanceURL, issuedAt: Date(), expiresAt: nil)
+            return RealSalesforceAPIClient(config: .current, session: session, tokenStore: EphemeralSalesforceTokenStore())
+        case .oauth:
+            let client = RealSalesforceAPIClient(config: .current)
+            _ = try await client.authenticate()
+            return client
+        }
+    }
+
+    private func testSites() async {
+        await runTest {
+            let client = try await makeClient()
+            sites = try await client.fetchSites()
+            selectedSiteId = sites.first?.id ?? ""
+            let names = sites.prefix(5).map { "\($0.displayName) - \($0.pfIdPrefix)" }.joined(separator: "\n")
+            return """
+            Connected to Salesforce.
+            Plant sites returned: \(sites.count)
+            \(names)
+            """
+        }
+    }
+
+    private func testWorkOrdersByEquipmentNamePrefix(last30Days: Bool) async {
+        await runTest {
+            guard let selectedSite = selectedSiteForPrefix else {
+                return "Select a returned plant site before testing equipment name prefix lookup."
+            }
+            let prefix = SitePFIDPrefix.derive(from: selectedSite.name)
+            let client = try await makeClient()
+            guard let realClient = client as? RealSalesforceAPIClient else {
+                workOrders = try await client.fetchWorkOrders(siteId: selectedSite.id, scheduledDate: Date())
+                selectedWorkOrderId = workOrders.first?.id ?? ""
+                return "Mock backend does not have child equipment name relationships. Returned mock Work Orders: \(workOrders.count)\n\(workOrderSummaryLines(workOrders))"
+            }
+
+            workOrders = last30Days
+                ? try await realClient.fetchWorkOrdersForLast30Days(equipmentNamePrefix: prefix.value)
+                : try await realClient.fetchWorkOrders(equipmentNamePrefix: prefix.value)
+            selectedWorkOrderId = workOrders.first?.id ?? ""
+            if workOrders.isEmpty {
+                if last30Days {
+                    return """
+                    Selected site: \(selectedSite.displayName)
+                    Equipment name: \(selectedSite.name)
+                    Derived PF ID prefix: \(prefix.value)
+                    Work orders returned: 0
+                    No work orders found for this site prefix in the last 30 days. Confirm the equipment relationship name and scheduled date field if this is unexpected.
+                    """
+                }
+                return """
+                Selected site: \(selectedSite.displayName)
+                Equipment name: \(selectedSite.name)
+                Derived PF ID prefix: \(prefix.value)
+                Work orders returned: 0
+                No work orders found for this site prefix today. This may mean none are scheduled today, or the scheduled start date filter needs a wider test range.
+                """
+            }
+            return """
+            Selected site: \(selectedSite.displayName)
+            Equipment name: \(selectedSite.name)
+            Derived PF ID prefix: \(prefix.value)
+            Work orders returned: \(workOrders.count)
+            \(workOrderSummaryLines(workOrders))
+            """
+        }
+    }
+
+    private func workOrderSummaryLines(_ workOrders: [WorkOrderDTO]) -> String {
+        workOrders.prefix(10).map { workOrder in
+            let status = [workOrder.status, workOrder.woStatus].compactMap { $0 }.joined(separator: " / ")
+            let date = workOrder.scheduledStartDate == Date.distantPast ? nil : workOrder.scheduledStartDate.formatted(date: .abbreviated, time: .omitted)
+            return [workOrder.name, workOrder.assetName, workOrder.accountSR, status.isEmpty ? nil : status, date].compactMap { $0 }.joined(separator: " - ")
+        }.joined(separator: "\n")
+    }
+
+    private func testTasks() async {
+        await runTest {
+            let client = try await makeClient()
+            tasks = try await client.fetchWorkTasks(workOrderId: selectedWorkOrderId)
+            let lines = tasks.prefix(10).map(\.name).joined(separator: "\n")
+            return """
+            Work Order Id: \(selectedWorkOrderId)
+            Tasks returned: \(tasks.count)
+            \(lines)
+            """
+        }
+    }
+
+    private func testSteps() async {
+        await runTest {
+            guard tasks.isEmpty == false else {
+                return "No work tasks found for this work order."
+            }
+            let client = try await makeClient()
+            steps = try await client.fetchWorkTaskSteps(workTaskIds: tasks.map(\.id))
+            let selectedWorkOrderName = workOrders.first { $0.id == selectedWorkOrderId }?.name ?? selectedWorkOrderId
+            let groupedSteps = Dictionary(grouping: steps, by: \.workTaskId)
+            let taskLines = tasks.map { task in
+                let taskSteps = groupedSteps[task.id] ?? []
+                let stepNames = taskSteps.prefix(3).map(\.name).joined(separator: ", ")
+                let sampleText = stepNames.isEmpty ? "No steps returned" : stepNames
+                return "\(task.name): \(taskSteps.count) steps - \(sampleText)"
+            }.joined(separator: "\n")
+            return """
+            Work Order: \(selectedWorkOrderName)
+            Total Work Tasks returned: \(tasks.count)
+            Total Work Task Steps returned: \(steps.count)
+            \(taskLines)
+            """
+        }
+    }
+
+    private func runTest(_ operation: @escaping () async throws -> String) async {
+        isTesting = true
+        defer { isTesting = false }
+        do {
+            resultMessage = try await operation()
+        } catch {
+            resultMessage = formattedError(error)
+        }
+    }
+
+    private func formattedError(_ error: Error) -> String {
+        var message = error.localizedDescription
+        if case let SalesforceAPIError.requestFailed(statusCode, body) = error {
+            message = "Salesforce request failed with HTTP \(statusCode)."
+            if let fieldName = invalidFieldName(in: body) {
+                message += "\nInvalid field: \(fieldName)"
+            }
+            if body.localizedCaseInsensitiveContains("pffsm__Equipment__r") || body.localizedCaseInsensitiveContains("relationship") {
+                message += "\nConfirm the actual relationship name for pffsm__Equipment__c from Salesforce describe metadata."
+            }
+            if body.isEmpty == false {
+                message += "\n\(body)"
+            }
+        }
+        if case let SalesforceAPIError.decodingFailed(detail) = error {
+            message = "Could not decode Salesforce response.\n\(detail)"
+        }
+        return message
+    }
+
+    private func invalidFieldName(in body: String) -> String? {
+        guard let range = body.range(of: "No such column '") else {
+            return nil
+        }
+        let remainder = body[range.upperBound...]
+        guard let end = remainder.firstIndex(of: "'") else {
+            return nil
+        }
+        return String(remainder[..<end])
+    }
+}
+#endif

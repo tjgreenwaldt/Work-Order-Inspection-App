@@ -30,13 +30,24 @@ struct SiteRepository: ModelSaving {
         try saveIfNeeded()
     }
 
-    func allPlantsInService() throws -> [SiteEntity] {
+    func allPlantsInService(applySiteNameFilter: Bool = true) throws -> [SiteEntity] {
         try modelContext.fetch(FetchDescriptor<SiteEntity>(sortBy: [SortDescriptor(\SiteEntity.name)]))
-            .filter { $0.assetClass == "Plant" && $0.status == "In Service" }
+            .filter { site in
+                site.assetClass == "Plant" &&
+                site.status == "In Service" &&
+                (applySiteNameFilter == false || SiteRepository.isLikelyPlantSiteName(site.name))
+            }
     }
 
     func find(id: String) throws -> SiteEntity? {
         try modelContext.fetch(FetchDescriptor<SiteEntity>()).first { $0.id == id }
+    }
+
+    static func isLikelyPlantSiteName(_ name: String) -> Bool {
+        let lowercasedName = name.lowercased()
+        guard lowercasedName.contains(".plant") else { return false }
+        let childEquipmentTerms = ["inverter", "inv", "pcs", "tracker", "combiner", "transformer", "met", "weather", "skid", "block", "string", "feeder", "breaker"]
+        return childEquipmentTerms.contains { lowercasedName.contains($0.lowercased()) } == false
     }
 }
 
@@ -62,8 +73,25 @@ struct WorkOrderRepository: ModelSaving {
             .filter { $0.assetId == siteId && $0.scheduledStartDate >= start && $0.scheduledStartDate < end }
     }
 
+    func forSite(_ siteId: String, equipmentNamePrefix: String, scheduledDate: Date) throws -> [WorkOrderEntity] {
+        let start = Calendar.current.startOfDay(for: scheduledDate)
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? scheduledDate
+        return try modelContext.fetch(FetchDescriptor<WorkOrderEntity>(sortBy: [SortDescriptor(\WorkOrderEntity.name)]))
+            .filter { workOrder in
+                // In Salesforce, scheduled Work Orders may be attached to child equipment instead of the Plant record.
+                let matchesSelectedSite = workOrder.assetId == siteId
+                let matchesChildEquipment = workOrder.assetName?.hasPrefix(equipmentNamePrefix) == true
+                return (matchesSelectedSite || matchesChildEquipment) && workOrder.scheduledStartDate >= start && workOrder.scheduledStartDate < end
+            }
+    }
+
     func find(id: String) throws -> WorkOrderEntity? {
         try modelContext.fetch(FetchDescriptor<WorkOrderEntity>()).first { $0.id == id }
+    }
+
+    func forIds(_ ids: [String]) throws -> [WorkOrderEntity] {
+        try modelContext.fetch(FetchDescriptor<WorkOrderEntity>(sortBy: [SortDescriptor(\WorkOrderEntity.name)]))
+            .filter { ids.contains($0.id) }
     }
 }
 
@@ -138,6 +166,7 @@ struct LocalStepDraftRepository: ModelSaving {
             $0.draftKey == draftKey || ($0.workOrderId == workOrderId && $0.workTaskStepId == stepId)
         }
         if existing?.draftKey == nil {
+            // Backfill older local drafts so future lookups use the composite draft key consistently.
             existing?.draftKey = draftKey
             try saveIfNeeded()
         }
@@ -163,7 +192,13 @@ struct LocalStepDraftRepository: ModelSaving {
     }
 
     func buildDrafts(workOrderId: String, tasks: [WorkTaskEntity], steps: [WorkTaskStepEntity]) throws {
-        for step in steps where try draft(workOrderId: workOrderId, stepId: step.id) == nil {
+        for step in steps {
+            if let existing = try draft(workOrderId: workOrderId, stepId: step.id) {
+                // Preserve the original Salesforce values for change detection across repeated inspection loads.
+                existing.originalResultRawValue = existing.originalResultRawValue ?? existing.resultRawValue
+                existing.originalComments = existing.originalComments ?? existing.comments
+                continue
+            }
             modelContext.insert(LocalStepDraftEntity(
                 workOrderId: workOrderId,
                 workTaskId: step.workTaskId,
@@ -180,6 +215,8 @@ struct LocalStepDraftRepository: ModelSaving {
 
     func markWorkOrderPendingUpload(_ workOrderId: String) throws {
         for draft in try drafts(workOrderId: workOrderId) {
+            guard draft.hasChangesForUpload || draft.syncStatus == .syncError else { continue }
+            // Submit marks changed drafts for upload but leaves them in SwiftData until sync confirms Salesforce accepted them.
             draft.syncStatus = .pendingUpload
             draft.completedAt = draft.completedAt ?? Date()
             draft.lastSyncError = nil
@@ -216,7 +253,7 @@ struct SiteService {
     func fetchSites() async throws -> [SiteEntity] {
         let sites = try await apiClient.fetchSites()
         try repository.upsert(sites)
-        return try repository.allPlantsInService()
+        return try repository.allPlantsInService(applySiteNameFilter: (apiClient is MockSalesforceAPIClient) == false)
     }
 }
 
@@ -224,6 +261,64 @@ struct SiteService {
 struct WorkOrderService {
     let apiClient: SalesforceAPIClient
     let repository: WorkOrderRepository
+
+    func fetchTodaysWorkOrders(site: SiteDTO) async throws -> [WorkOrderEntity] {
+        let today = Date()
+        // Salesforce read path: selected site -> derived PF prefix -> Work Orders on child equipment for today.
+        let workOrders = try await apiClient.fetchWorkOrders(site: site, scheduledDate: today)
+        try repository.upsert(workOrders)
+        if apiClient is RealSalesforceAPIClient {
+            // Real queries already use the PF-prefix relationship, so display exactly the returned records.
+            return try repository.forIds(workOrders.map(\.id))
+        }
+        return try repository.forSite(site.id, equipmentNamePrefix: site.pfIdPrefix, scheduledDate: today)
+    }
+
+    #if DEBUG
+    func fetchTodaysWorkOrdersWithDiagnostics(site: SiteDTO) async throws -> (workOrders: [WorkOrderEntity], diagnostics: String?) {
+        let today = Date()
+        let prefix = site.pfIdPrefix
+        let todayQuery = SalesforceSchema.workOrdersForEquipmentNamePrefixQuery(prefix: prefix)
+        let workOrders = try await apiClient.fetchWorkOrders(site: site, scheduledDate: today)
+        try repository.upsert(workOrders)
+        let displayedWorkOrders: [WorkOrderEntity]
+        if apiClient is RealSalesforceAPIClient {
+            displayedWorkOrders = try repository.forIds(workOrders.map(\.id))
+        } else {
+            displayedWorkOrders = try repository.forSite(site.id, equipmentNamePrefix: prefix, scheduledDate: today)
+        }
+
+        guard let realClient = apiClient as? RealSalesforceAPIClient else {
+            return (displayedWorkOrders, nil)
+        }
+
+        var diagnostics = """
+        Selected site friendlyName: \(site.displayName)
+        Selected site Salesforce Id: \(site.id)
+        Selected site raw Name: \(site.name)
+        Derived PF ID prefix: \(prefix)
+        Scheduled date: \(today.formatted(date: .abbreviated, time: .shortened))
+        Today SOQL:
+        \(todayQuery)
+        Today Work Orders returned: \(workOrders.count)
+        Work Orders displayed: \(displayedWorkOrders.count)
+        """
+
+        if workOrders.isEmpty {
+            let last30Query = SalesforceSchema.workOrdersForEquipmentNamePrefixLast30DaysQuery(prefix: prefix)
+            let last30WorkOrders = try await realClient.fetchWorkOrdersForLast30Days(equipmentNamePrefix: prefix)
+            diagnostics += """
+
+            Last 30 Days SOQL:
+            \(last30Query)
+            Last 30 Days Work Orders returned: \(last30WorkOrders.count)
+            \(last30WorkOrders.isEmpty ? "No Work Orders found by PF prefix. Confirm the selected site PF prefix matches the child equipment naming convention." : "No Work Orders found for today. Last 30 Days returned records, so the site lookup is working and the issue is likely the scheduled date filter or no work scheduled today.")
+            """
+        }
+
+        return (displayedWorkOrders, diagnostics)
+    }
+    #endif
 
     func fetchTodaysWorkOrders(siteId: String) async throws -> [WorkOrderEntity] {
         let today = Date()
@@ -241,12 +336,14 @@ struct InspectionFormService {
     let draftRepository: LocalStepDraftRepository
 
     func loadInspection(workOrderId: String) async throws -> (tasks: [WorkTaskEntity], steps: [WorkTaskStepEntity], drafts: [LocalStepDraftEntity]) {
+        // Inspection read path: Work Order -> Work Tasks -> Work Task Steps, then local drafts mirror editable step fields.
         let taskDTOs = try await apiClient.fetchWorkTasks(workOrderId: workOrderId)
         try taskRepository.upsert(taskDTOs)
         let tasks = try taskRepository.forWorkOrder(workOrderId)
-        let stepDTOs = try await apiClient.fetchWorkTaskSteps(workTaskIds: tasks.map(\WorkTaskEntity.id))
+        let taskIds = tasks.map(\WorkTaskEntity.id)
+        let stepDTOs = taskIds.isEmpty ? [] : try await apiClient.fetchWorkTaskSteps(workTaskIds: taskIds)
         try stepRepository.upsert(stepDTOs)
-        let steps = try stepRepository.forTasks(tasks.map(\WorkTaskEntity.id))
+        let steps = try stepRepository.forTasks(taskIds)
         try draftRepository.buildDrafts(workOrderId: workOrderId, tasks: tasks, steps: steps)
         return (tasks, steps, try draftRepository.drafts(workOrderId: workOrderId))
     }
@@ -284,6 +381,7 @@ struct InspectionSyncService {
         var uploadedCount = 0
         var firstSyncError: Error?
         for draft in drafts {
+            // Each draft writes back only Work Task Step response fields; Work Orders and Work Tasks are not mutated.
             draft.syncStatus = .uploading
             draft.lastSyncError = nil
             try draftRepository.saveIfNeeded()
@@ -291,6 +389,8 @@ struct InspectionSyncService {
             do {
                 try await apiClient.updateWorkTaskStep(stepId: draft.workTaskStepId, result: draft.result, comments: draft.comments, complete: true, completedAt: completedAt)
                 draft.completedAt = completedAt
+                draft.originalResultRawValue = draft.resultRawValue
+                draft.originalComments = draft.comments
                 draft.syncStatus = .synced
                 draft.lastSyncError = nil
                 uploadedCount += 1

@@ -15,10 +15,12 @@ enum SalesforceSchema {
     enum SiteFields {
         static let id = "Id"
         static let name = "Name"
+        static let description = "pffsm__Description__c"
+        static let location = "pffsm__Location__c"
+        static let siteName = "pffsm__Site_Name__c"
         static let assetClass = "pffsm__Asset_Class__c"
         static let assetSubClass = "pffsm__Asset_SubClass__c"
         static let status = "pffsm__Status__c"
-        static let siteStatus = "pffsm__Site_Status__c"
         static let plant = "pffsm__Plant__c"
         static let plantName = "pffsm__PlantName__c"
         static let parent = "pffsm__Parent__c"
@@ -28,6 +30,9 @@ enum SalesforceSchema {
         static let stateProvince = "pffsm__State_Province__c"
         static let nameplateCapacityKW = "pffsm__Site_Nameplate_Capacity_kW__c"
         static let uniqueName = "pffsm__Unique_Name__c"
+        static let displayName = "pffsm__Display_Name__c"
+        static let accountId = "pffsm__Account__c"
+        static let accountName = "pffsm__Account__r.Name"
         static let externalAssetId = "pffsm__External_Asset_ID__c"
         static let assetUUID = "pffsm__Asset_UUID__c"
     }
@@ -35,7 +40,12 @@ enum SalesforceSchema {
     enum WorkOrderFields {
         static let id = "Id"
         static let name = "Name"
-        static let assetId = "pffsm__Asset__c"
+        static let assetId = "pffsm__Equipment__c"
+        static let assetName = "pffsm__Equipment__r.Name"
+        static let description = "pffsm__Description__c"
+        static let assetDescription = "pffsm__Equipment__r.pffsm__Description__c"
+        static let accountId = "pffsm__Account__c"
+        static let accountSR = "Account_SR__c"
         static let status = "pffsm__Status__c"
         static let woStatus = "pffsm__WO_Status__c"
         static let woType = "pffsm__WO_Type__c"
@@ -56,7 +66,6 @@ enum SalesforceSchema {
         static let id = "Id"
         static let name = "Name"
         static let workOrderId = "pffsm__Work_Order__c"
-        static let assetId = "pffsm__Asset__c"
         static let step = "pffsm__Step__c"
         static let description = "pffsm__Description__c"
         static let status = "pffsm__Status__c"
@@ -116,46 +125,143 @@ enum SalesforceSchema {
 
     static func sitesQuery() -> String {
         """
-        SELECT Id, Name, pffsm__Asset_Class__c, pffsm__Asset_SubClass__c, pffsm__Status__c,
-               pffsm__Site_Status__c, pffsm__Plant__c, pffsm__PlantName__c,
-               pffsm__Top_Level_Parent__c, pffsm__Geolocation__Latitude__s,
-               pffsm__Geolocation__Longitude__s, pffsm__State_Province__c,
-               pffsm__Site_Nameplate_Capacity_kW__c, pffsm__Unique_Name__c,
-               pffsm__External_Asset_ID__c, pffsm__Asset_UUID__c
+        SELECT Id, Name, pffsm__Description__c, pffsm__Asset_Class__c, pffsm__Status__c
+        FROM pffsm__smEquipment__c
+        WHERE pffsm__Asset_Class__c = 'Plant'
+        AND pffsm__Status__c = 'In Service'
+        ORDER BY pffsm__Description__c, Name
+        """
+    }
+
+    #if DEBUG
+    static let siteFriendlyNameCandidateFields = [
+        SiteFields.description,
+        SiteFields.location,
+        SiteFields.siteName,
+        SiteFields.plantName,
+        SiteFields.uniqueName,
+        SiteFields.displayName,
+        SiteFields.accountId,
+        SiteFields.accountName
+    ]
+
+    static func siteFriendlyNameCandidateQuery(fieldAPIName: String) -> String {
+        """
+        SELECT Id, Name, \(fieldAPIName)
         FROM pffsm__smEquipment__c
         WHERE pffsm__Asset_Class__c = 'Plant'
         AND pffsm__Status__c = 'In Service'
         ORDER BY Name
+        LIMIT 10
         """
     }
+    #endif
 
     static func workOrdersForSiteQuery(siteId: String, scheduledDate: Date) -> String {
+        #if DEBUG
+        // Real org testing confirmed the Work Order equipment/site lookup is pffsm__Equipment__c, not pffsm__Asset__c.
+        #endif
         """
-        SELECT Id, Name, pffsm__Asset__c, pffsm__Status__c, pffsm__WO_Status__c,
-               pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c,
-               pffsm__Scheduled_Date_Time__c, pffsm__Scheduled_Onsite_Date__c,
-               pffsm__Scheduled_Completion_Date__c, pffsm__Site_Name__c,
-               pffsm__Site_Type__c, pffsm__Site_Access__c, pffsm__Site_Instructions__c,
-               pffsm__Work_Order_18__c, RecordTypeId
+        SELECT Id, Name, pffsm__Equipment__c, pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c
         FROM pffsm__smWork_Order__c
-        WHERE pffsm__Asset__c = '\(soqlEscape(siteId))'
+        WHERE pffsm__Equipment__c = '\(soqlEscape(siteId))'
         AND pffsm__Scheduled_Start_Date__c = TODAY
         ORDER BY pffsm__Scheduled_Start_Date__c, Name
         """
     }
 
-    static func workTasksForWorkOrderQuery(workOrderId: String) -> String {
+    static func workOrdersForSiteDateRangeQuery(siteId: String, scheduledDate: Date) -> String {
+        let calendar = Calendar.current
+        let localStart = calendar.startOfDay(for: scheduledDate)
+        let localEnd = calendar.date(byAdding: .day, value: 1, to: localStart) ?? scheduledDate
+        let start = DateFormatter.salesforceDateTimeUTC.string(from: localStart)
+        let end = DateFormatter.salesforceDateTimeUTC.string(from: localEnd)
+
+        return """
+        SELECT Id, Name, pffsm__Equipment__c, pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c
+        FROM pffsm__smWork_Order__c
+        WHERE pffsm__Equipment__c = '\(soqlEscape(siteId))'
+        AND pffsm__Scheduled_Start_Date__c >= \(start)
+        AND pffsm__Scheduled_Start_Date__c < \(end)
+        ORDER BY pffsm__Scheduled_Start_Date__c, Name
         """
-        SELECT Id, Name, pffsm__Work_Order__c, pffsm__Asset__c, pffsm__Step__c,
-               pffsm__Description__c, pffsm__Status__c, pffsm__Schedule_Date__c,
-               pffsm__Task_Due_Date__c, pffsm__Standard_Form_Template__c,
-               pffsm__Std_Task__c, pffsm__Total_Steps__c,
-               pffsm__Task_steps_completed__c, pffsm__WT_Type__c, pffsm__Priority__c,
-               pffsm__InstructionsRT__c, pffsm__Form_Values_JSON__c,
-               pffsm__Inspection_Form_Completed__c
+    }
+
+    static func workOrdersForEquipmentNamePrefixQuery(prefix: String) -> String {
+        let likePattern = "\(soqlEscape(prefix))%"
+        // Work Orders are queried by child equipment name prefix because the Plant itself may not be the Work Order equipment.
+        return """
+        SELECT Id, Name, pffsm__Description__c, pffsm__Equipment__c,
+               pffsm__Equipment__r.Name, pffsm__Equipment__r.pffsm__Description__c,
+               pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c,
+               pffsm__Scheduled_Start_Date__c
+        FROM pffsm__smWork_Order__c
+        WHERE pffsm__Equipment__r.Name LIKE '\(likePattern)'
+        AND pffsm__Scheduled_Start_Date__c = TODAY
+        ORDER BY pffsm__Scheduled_Start_Date__c, Name
+        """
+    }
+
+    static func workOrdersForEquipmentNamePrefixLast30DaysQuery(prefix: String) -> String {
+        let likePattern = "\(soqlEscape(prefix))%"
+        #if DEBUG
+        // Last-30-days fallback for validating the child equipment name relationship before changing the production Work Order fetch signature.
+        #endif
+        return """
+        SELECT Id, Name, pffsm__Description__c, pffsm__Equipment__c,
+               pffsm__Equipment__r.Name, pffsm__Equipment__r.pffsm__Description__c,
+               pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c,
+               pffsm__Scheduled_Start_Date__c
+        FROM pffsm__smWork_Order__c
+        WHERE pffsm__Equipment__r.Name LIKE '\(likePattern)'
+        AND pffsm__Scheduled_Start_Date__c = LAST_N_DAYS:30
+        ORDER BY pffsm__Scheduled_Start_Date__c DESC, Name
+        """
+    }
+
+    static func workOrdersForAccountQuery(accountId: String, scheduledDate: Date) -> String {
+        #if DEBUG
+        // The Work Order object has pffsm__Account__c as an Account lookup. Real org testing is comparing Account-based lookup vs Equipment-based lookup for scheduled Work Orders.
+        #endif
+        """
+        SELECT Id, Name, pffsm__Account__c, Account_SR__c, pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c
+        FROM pffsm__smWork_Order__c
+        WHERE pffsm__Account__c = '\(soqlEscape(accountId))'
+        AND pffsm__Scheduled_Start_Date__c = TODAY
+        ORDER BY pffsm__Scheduled_Start_Date__c, Name
+        """
+    }
+
+    static func workOrdersForAccountDateRangeQuery(accountId: String, scheduledDate: Date) -> String {
+        let calendar = Calendar.current
+        let localStart = calendar.startOfDay(for: scheduledDate)
+        let localEnd = calendar.date(byAdding: .day, value: 1, to: localStart) ?? scheduledDate
+        let start = DateFormatter.salesforceDateTimeUTC.string(from: localStart)
+        let end = DateFormatter.salesforceDateTimeUTC.string(from: localEnd)
+
+        return """
+        SELECT Id, Name, pffsm__Account__c, Account_SR__c, pffsm__Status__c, pffsm__WO_Status__c,
+               pffsm__WO_Type__c, pffsm__Priority__c, pffsm__Scheduled_Start_Date__c
+        FROM pffsm__smWork_Order__c
+        WHERE pffsm__Account__c = '\(soqlEscape(accountId))'
+        AND pffsm__Scheduled_Start_Date__c >= \(start)
+        AND pffsm__Scheduled_Start_Date__c < \(end)
+        ORDER BY pffsm__Scheduled_Start_Date__c, Name
+        """
+    }
+
+    static func workTasksForWorkOrderQuery(workOrderId: String) -> String {
+        // Keep Work Task fields minimal: org-specific optional fields vary, and steps carry the editable inspection data.
+        """
+        SELECT Id, Name, pffsm__Work_Order__c
         FROM pffsm__smWO_Task__c
         WHERE pffsm__Work_Order__c = '\(soqlEscape(workOrderId))'
-        ORDER BY pffsm__Step__c, Name
+        ORDER BY Name
         """
     }
 
@@ -192,10 +298,44 @@ enum SalesforceSchema {
     }
 }
 
+struct SitePFIDPrefix {
+    let value: String
+    let isReliable: Bool
+
+    static func derive(from siteName: String) -> SitePFIDPrefix {
+        let trimmedName = siteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let plantRange = trimmedName.range(of: ".Plant") {
+            return SitePFIDPrefix(value: String(trimmedName[..<plantRange.lowerBound]), isReliable: true)
+        }
+
+        let segments = trimmedName.split(separator: ".")
+        if segments.count >= 3 {
+            return SitePFIDPrefix(value: segments.prefix(3).joined(separator: "."), isReliable: true)
+        }
+
+        return SitePFIDPrefix(value: trimmedName, isReliable: false)
+    }
+}
+
+func sitePfIdPrefix(from equipmentName: String) -> String {
+    SitePFIDPrefix.derive(from: equipmentName).value
+}
+
 extension ISO8601DateFormatter {
     static let salesforceInternetDateTime: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+}
+
+private extension DateFormatter {
+    static let salesforceDateTimeUTC: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
         return formatter
     }()
 }

@@ -51,6 +51,7 @@ struct SalesforceFileUploadDTO: Identifiable, Codable, Equatable {
 struct SiteDTO: Identifiable, Codable, Equatable {
     let id: String
     let name: String
+    let friendlyName: String?
     let assetClass: String
     let assetSubClass: String?
     let status: String
@@ -67,10 +68,27 @@ struct SiteDTO: Identifiable, Codable, Equatable {
     let assetUUID: String?
 }
 
+extension SiteDTO {
+    var displayName: String {
+        let trimmedFriendlyName = friendlyName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedFriendlyName.isEmpty ? SiteNameDisplay.readableFallback(from: name) : trimmedFriendlyName
+    }
+
+    var pfIdPrefix: String {
+        // Site selection starts at a Plant record; Work Orders are found through child equipment names that share this PF prefix.
+        sitePfIdPrefix(from: name)
+    }
+}
+
 struct WorkOrderDTO: Identifiable, Codable, Equatable {
     let id: String
     let name: String
     let assetId: String
+    let assetName: String?
+    let descriptionText: String?
+    let assetDescription: String?
+    let accountId: String?
+    let accountSR: String?
     let status: String?
     let woStatus: String?
     let woType: String?
@@ -130,6 +148,7 @@ struct WorkTaskStepDTO: Identifiable, Codable, Equatable {
 final class SiteEntity {
     @Attribute(.unique) var id: String
     var name: String
+    var friendlyName: String?
     var assetClass: String
     var assetSubClass: String?
     var status: String
@@ -148,6 +167,7 @@ final class SiteEntity {
     init(dto: SiteDTO) {
         self.id = dto.id
         self.name = dto.name
+        self.friendlyName = dto.friendlyName
         self.assetClass = dto.assetClass
         self.assetSubClass = dto.assetSubClass
         self.status = dto.status
@@ -165,11 +185,55 @@ final class SiteEntity {
     }
 }
 
+extension SiteEntity {
+    var displayName: String {
+        let trimmedFriendlyName = friendlyName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedFriendlyName.isEmpty ? SiteNameDisplay.readableFallback(from: name) : trimmedFriendlyName
+    }
+
+    var pfIdPrefix: String {
+        // Keep the SwiftData entity projection aligned with SiteDTO so cached sites drive the same Work Order lookup.
+        sitePfIdPrefix(from: name)
+    }
+}
+
+enum SiteNameDisplay {
+    static func readableFallback(from equipmentName: String) -> String {
+        // Salesforce equipment names often encode the PF prefix and ".Plant"; strip those parts for a readable site label.
+        let trimmedName = equipmentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = sitePfIdPrefix(from: trimmedName)
+        var remainder = trimmedName
+
+        if remainder.hasPrefix(prefix) {
+            remainder.removeFirst(prefix.count)
+        }
+        if remainder.hasPrefix(".") {
+            remainder.removeFirst()
+        }
+        if let plantRange = remainder.range(of: ".Plant") {
+            remainder = String(remainder[..<plantRange.lowerBound])
+        } else if let plantRange = remainder.range(of: "Plant") {
+            remainder = String(remainder[..<plantRange.lowerBound])
+        }
+
+        let cleaned = remainder
+            .replacingOccurrences(of: ".", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return cleaned.isEmpty ? prefix : cleaned
+    }
+}
+
 @Model
 final class WorkOrderEntity {
     @Attribute(.unique) var id: String
     var name: String
     var assetId: String
+    var assetName: String?
+    var descriptionText: String?
+    var assetDescription: String?
+    var accountId: String?
+    var accountSR: String?
     var status: String?
     var woStatus: String?
     var woType: String?
@@ -189,6 +253,11 @@ final class WorkOrderEntity {
         self.id = dto.id
         self.name = dto.name
         self.assetId = dto.assetId
+        self.assetName = dto.assetName
+        self.descriptionText = dto.descriptionText
+        self.assetDescription = dto.assetDescription
+        self.accountId = dto.accountId
+        self.accountSR = dto.accountSR
         self.status = dto.status
         self.woStatus = dto.woStatus
         self.woType = dto.woType
@@ -289,12 +358,15 @@ final class WorkTaskStepEntity {
 @Model
 final class LocalStepDraftEntity {
     @Attribute(.unique) var id: UUID
+    // SwiftData cannot express the intended composite key directly, so this guards one draft per Work Order/Step pair.
     @Attribute(.unique) var draftKey: String?
     var workOrderId: String
     var workTaskId: String
     var workTaskStepId: String
     var resultRawValue: String
+    var originalResultRawValue: String?
     var comments: String
+    var originalComments: String?
     var localPhotoPath: String?
     var completedAt: Date?
     var syncStatusRawValue: String
@@ -310,6 +382,12 @@ final class LocalStepDraftEntity {
         set { syncStatusRawValue = newValue.rawValue }
     }
 
+    var hasChangesForUpload: Bool {
+        // Only changed step results/comments become pending uploads; unchanged cached Salesforce values stay local.
+        resultRawValue != (originalResultRawValue ?? resultRawValue) ||
+        comments != (originalComments ?? comments)
+    }
+
     init(id: UUID = UUID(), workOrderId: String, workTaskId: String, workTaskStepId: String, result: StepResult, comments: String = "", localPhotoPath: String? = nil, completedAt: Date? = nil, syncStatus: SyncStatus = .draft, lastSyncError: String? = nil) {
         self.id = id
         self.draftKey = Self.makeDraftKey(workOrderId: workOrderId, stepId: workTaskStepId)
@@ -317,7 +395,9 @@ final class LocalStepDraftEntity {
         self.workTaskId = workTaskId
         self.workTaskStepId = workTaskStepId
         self.resultRawValue = result.rawValue
+        self.originalResultRawValue = result.rawValue
         self.comments = comments
+        self.originalComments = comments
         self.localPhotoPath = localPhotoPath
         self.completedAt = completedAt
         self.syncStatusRawValue = syncStatus.rawValue
@@ -360,6 +440,7 @@ final class PendingPhotoUploadEntity {
 extension SiteEntity {
     func update(from dto: SiteDTO) {
         name = dto.name
+        friendlyName = dto.friendlyName
         assetClass = dto.assetClass
         assetSubClass = dto.assetSubClass
         status = dto.status
@@ -377,7 +458,7 @@ extension SiteEntity {
     }
 
     var dto: SiteDTO {
-        SiteDTO(id: id, name: name, assetClass: assetClass, assetSubClass: assetSubClass, status: status, siteStatus: siteStatus, plant: plant, plantName: plantName, topLevelParent: topLevelParent, latitude: latitude, longitude: longitude, stateProvince: stateProvince, nameplateCapacityKW: nameplateCapacityKW, uniqueName: uniqueName, externalAssetId: externalAssetId, assetUUID: assetUUID)
+        SiteDTO(id: id, name: name, friendlyName: friendlyName, assetClass: assetClass, assetSubClass: assetSubClass, status: status, siteStatus: siteStatus, plant: plant, plantName: plantName, topLevelParent: topLevelParent, latitude: latitude, longitude: longitude, stateProvince: stateProvince, nameplateCapacityKW: nameplateCapacityKW, uniqueName: uniqueName, externalAssetId: externalAssetId, assetUUID: assetUUID)
     }
 }
 
@@ -385,6 +466,11 @@ extension WorkOrderEntity {
     func update(from dto: WorkOrderDTO) {
         name = dto.name
         assetId = dto.assetId
+        assetName = dto.assetName
+        descriptionText = dto.descriptionText
+        assetDescription = dto.assetDescription
+        accountId = dto.accountId
+        accountSR = dto.accountSR
         status = dto.status
         woStatus = dto.woStatus
         woType = dto.woType
@@ -402,7 +488,7 @@ extension WorkOrderEntity {
     }
 
     var dto: WorkOrderDTO {
-        WorkOrderDTO(id: id, name: name, assetId: assetId, status: status, woStatus: woStatus, woType: woType, priority: priority, scheduledStartDate: scheduledStartDate, scheduledDateTime: scheduledDateTime, scheduledOnsiteDate: scheduledOnsiteDate, scheduledCompletionDate: scheduledCompletionDate, siteName: siteName, siteType: siteType, siteAccess: siteAccess, siteInstructions: siteInstructions, workOrder18: workOrder18, recordTypeId: recordTypeId)
+        WorkOrderDTO(id: id, name: name, assetId: assetId, assetName: assetName, descriptionText: descriptionText, assetDescription: assetDescription, accountId: accountId, accountSR: accountSR, status: status, woStatus: woStatus, woType: woType, priority: priority, scheduledStartDate: scheduledStartDate, scheduledDateTime: scheduledDateTime, scheduledOnsiteDate: scheduledOnsiteDate, scheduledCompletionDate: scheduledCompletionDate, siteName: siteName, siteType: siteType, siteAccess: siteAccess, siteInstructions: siteInstructions, workOrder18: workOrder18, recordTypeId: recordTypeId)
     }
 }
 
